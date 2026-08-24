@@ -3,16 +3,21 @@ meta-rzg3l-fast-boot-base
 
 This layer contains the graphics-stack-independent RZ/G3L fast-boot work:
 
-  Phase 1  Device-tree pruning and Linux kernel configuration trimming.
-  Phase 2  Rootfs slimming and systemd startup-order optimisation.
+  Phase 1   Device-tree pruning and Linux kernel configuration trimming.
+  Phase 2   Rootfs slimming and systemd startup-order optimisation.
+  Phase 2b  Removal of the three remaining blocks on the boot critical path,
+            each one located with systemd-analyze rather than guessed at.
 
 It intentionally keeps the BSP's Weston graphics stack. Build
-`core-image-weston` with the `rz-vlp-fast` distro to reproduce the phase-2
-baseline. The separate `meta-rzg3l-fast-boot-qt-eglfs` layer adds phase 3 and
-replaces Weston with Qt6/EGLFS.
+`core-image-weston` with the `rz-vlp-fast` distro to reproduce the baseline.
+The separate `meta-rzg3l-fast-boot-qt-eglfs` layer adds phase 3 and replaces
+Weston with Qt6/EGLFS.
 
 Serial console silencing and bootdelay are U-Boot environment settings and are
 not baked into either layer. See section V.
+
+Phase 2b is documented in section VII, including how each figure was measured
+and what to re-measure after a change.
 
 
 I. What this layer changes
@@ -30,6 +35,8 @@ I. What this layer changes
       extra UART, RTC and related peripheral nodes
     - fastboot.cfg removes unused kernel subsystems and drivers while keeping
       the display, boot storage and thermal-protection paths
+    - fastboot.cfg also drops CONFIG_LEGACY_PTYS and the wireless subsystem,
+      which exist only as device units for udev and systemd to walk (VII.1)
 
   Userspace
     - fastboot-mask-units.bbclass masks vconsole setup and the invalid ttyS0
@@ -136,3 +143,78 @@ and userspace features before adding any of those product functions.
 The microSD controller stays enabled for the development boot loop. A fixed
 eMMC product can disable it after manufacturing and recovery requirements are
 settled.
+
+
+VII. Phase 2b: the boot critical path
+=====================================
+
+Phase 2 left userspace at roughly 75% of the boot. `systemd-analyze plot`
+showed why: the path from systemd to graphical.target is not a broad parallel
+fan-out with some slow services in it, it is six strictly serial segments.
+Because they are serial, the savings from removing them add up.
+
+Baseline (RZ/G3L EVK, phase 2 + meta-rzg3l-fast-logo, eMMC boot):
+
+  systemd-analyze -> 553ms (kernel) + 6.284s (userspace) = 6.837s
+                     graphical.target reached after 6.176s in userspace
+
+  segment                                    kernel-rel     cost
+  ---------------------------------------------------------------
+  kernel -> systemd runnable                 0     .. 0.553   553 ms
+  systemd start-up + sysinit.target          0.553 .. 2.757  2204 ms   VII.2
+  basic.target / sockets / user-sessions      2.757 .. 2.883   126 ms
+  512 legacy PTY device units                2.883 .. 3.997  1114 ms   VII.1
+  getty.target / multi-user.target           3.997 .. 4.069    72 ms
+  weston.service                             4.069 .. 6.727  2658 ms   VII.3
+  ---------------------------------------------------------------
+  graphical.target                                   6.729
+
+`systemd-analyze plot` uses a kernel-relative x axis; `critical-chain` prints
+userspace-relative `@` times. The two differ by exactly the 553 ms kernel
+phase. All figures in this section are kernel-relative, so they line up with
+dmesg timestamps.
+
+Do not use the serial `login:` prompt as the metric. serial-getty is Type=idle,
+so it deliberately waits for the job queue to drain - in the baseline it prints
+at 7.897s, 1.2 s after the boot has actually finished.
+
+
+VII.1 512 legacy PTY device units - 1114 ms
+-------------------------------------------
+
+CONFIG_LEGACY_PTYS creates 256 BSD-style pty pairs. udev emits an event per
+device and systemd instantiates two device units for each, so the boot
+transaction carries 512 units that nothing will ever open - 81% of every unit
+in the plot. systemd walks them serially, and that walk lands squarely between
+systemd-user-sessions.service finishing (2.980s) and multi-user.target /
+weston.service being allowed to start (4.055s / 4.069s).
+
+The same 512 udev events are also most of the work in
+systemd-udev-trigger.service (1.049s), and the reason dev-mmcblk0p2.device
+does not settle until 2.757s.
+
+Fixed in fastboot.cfg by dropping CONFIG_LEGACY_PTYS. CONFIG_UNIX98_PTYS
+(/dev/ptmx) is asserted positively in the same fragment so a defconfig change
+can never leave the board with no pty support at all. The wireless subsystem
+goes with it: rz-vlp-fast already removes wifi and bluetooth from
+DISTRO_FEATURES, but the kernel still built cfg80211/mac80211 in - visible in
+the boot log as the regulatory.db load failing - and rfkill added two more
+device units.
+
+
+VII.4 Re-measuring
+------------------
+
+  # on the target
+  systemd-analyze
+  systemd-analyze blame
+  systemd-analyze critical-chain graphical.target
+  systemd-analyze plot > /boot.svg
+
+Read the numbers from `systemd-analyze`, not from the serial log. Take ten
+boots and record the P95: systemd-random-seed.service blocks for a variable
+time (VII.2), so a single best-case boot is not representative.
+
+When measuring anything that logs at info level, remember that
+systemd-conf_%.bbappend sets MaxLevelStore=warning - raise it to info for the
+measurement boot or the records will not be in the journal.
