@@ -1,0 +1,109 @@
+From 5736a138f7f68023fbb408dbe9890954c957c379 Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Mon, 24 Aug 2026 09:35:00 +0900
+Subject: [PATCH 4/4] video: rzg2l: wait for two frames instead of a flat
+ second
+
+rzg2l_video_init() ended with wait(1), a one-second busy loop added so
+that the first frame buffer image is really on the screen before U-Boot
+moves on.  It dominates the boot: measured on a smarc-rzg3l, U-Boot needs
+2.15 s from its banner to "Starting kernel" and rzg2l_video_init() is
+1.08 s of that - 1.02 s of which is this one call.
+
+The wait cannot make an HDMI sink lock any faster; the sink locks while
+U-Boot keeps booting, and the kernel inherits the running pipeline
+without touching it.  What the wait is actually good for is making sure
+the VSPD has scanned the image out, and that only takes frames.
+
+rzg2l_lcdc_start() already waits for the pipeline to start
+(VI6_DISP0_IRQ_STA.DST and, on MIPI DSI, ISR.VIN1).  Poll DST for two
+more display starts instead, so two complete frames have been output.
+That is 33 ms at 60 Hz, and the 100 ms timeout keeps a display that never
+starts from turning into a boot hang - which the old loop, being
+unconditional, at least could not do either way.
+
+U-Boot's share of boot drops by roughly 0.98 s.
+Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
+---
+ drivers/video/rzg2l/rzg2l_video.c | 54 ++++++++++++++++++++++---------
+ 1 file changed, 39 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/video/rzg2l/rzg2l_video.c b/drivers/video/rzg2l/rzg2l_video.c
+index 14bf08feaf..63cbe8479b 100644
+--- a/drivers/video/rzg2l/rzg2l_video.c
++++ b/drivers/video/rzg2l/rzg2l_video.c
+@@ -58,7 +58,7 @@ static void rzg2l_du_init(void);
+ static void rzg2l_vcpd_init(void);
+ static void rzg2l_vcpd_dl_init(void);
+ static void rzg2l_lcdc_start(void);
+-static void wait(int bootdelay);
++static void rzg2l_wait_frames(unsigned int frames, unsigned int timeout_ms);
+ 
+ static void rzg2ul_adv7513_init(void);
+ static int adv7513_i2c_reg_write(struct udevice *dev, uint addr, uint mask, uint data);
+@@ -144,10 +144,13 @@ int rzg2l_video_init(void){
+ 
+ 	rzg2l_lcdc_start();
+ 
+-	/* Added this delay to display the first FB image.
+-	 * This may be removed when an HDMI monitor display is not used.
++	/*
++	 * Let the first frame buffer image reach the screen before U-Boot
++	 * carries on.  rzg2l_lcdc_start() only waits for the pipeline to
++	 * *start*, so wait for two more display-start events, i.e. two
++	 * complete output frames.
+ 	 */
+-	wait(1);
++	rzg2l_wait_frames(2, 100);
+ 
+ 	return 0;
+ }
+@@ -961,16 +964,37 @@ static void rzg2l_lcdc_start(void)
+ #endif
+ }
+ 
+-static void wait(int delay)
++/*
++ * VI6_DISP0_IRQ_STA.DST is raised by the VSPD at every display start, that is
++ * once per output frame.  The status bits of this register are cleared by
++ * writing a zero to them, and the hardware updates them whether or not the
++ * matching enable in VI6_DISP0_IRQ_ENB is set - which is why
++ * rzg2l_lcdc_start() can already poll this bit with the interrupt masked off.
++ */
++#define VI6_DISP_IRQ_STA_DST	((uint32_t)0x00000100)
++
++/*
++ * Wait for the VSPD to complete @frames output frames.
++ *
++ * A frame is 16.7 ms at 60 Hz, so this normally returns in a few tens of
++ * milliseconds instead of the flat one second the driver used to burn here.
++ * @timeout_ms bounds the wait so that a display that never starts turns into
++ * a warning rather than a boot hang.
++ */
++static void rzg2l_wait_frames(unsigned int frames, unsigned int timeout_ms)
+ {
+-	unsigned long ts;
+-
+-        while (delay > 0) {
+-                --delay;
+-                /* delay 1000 ms */
+-                ts = get_timer(0);
+-                do {
+-                        udelay(10000);
+-                } while (get_timer(ts) < 1000);
+-        }
++	unsigned long ts = get_timer(0);
++
++	while (frames--) {
++		reg_write(VSPD_VI6_DISP0_IRQ_STA, 0);
++
++		while (!(reg_read(VSPD_VI6_DISP0_IRQ_STA) &
++			 VI6_DISP_IRQ_STA_DST)) {
++			if (get_timer(ts) >= timeout_ms) {
++				printf("fast-logo: display start timed out\n");
++				return;
++			}
++			udelay(100);
++		}
++	}
+ }

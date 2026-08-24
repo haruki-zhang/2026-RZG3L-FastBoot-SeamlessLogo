@@ -1,0 +1,165 @@
+From 149d95c324928500f089e127971f536b9e871a72 Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Wed, 5 Aug 2026 11:58:05 +0900
+Subject: [PATCH] drm/bridge: adv7511: keep an HDMI output configured by the
+ bootloader
+
+With "renesas,seamless-boot-logo" on the ADV7535 node the encoder has
+already been programmed over I2C by U-Boot and is driving the sink when
+the driver probes.
+
+Most of probe is harmless here, because adv7533_patch_registers() and
+adv7533_patch_cec_registers() write exactly the values the bootloader
+programmed.  Two things are not:
+
+ - adv7511_packet_disable(0xffff) clears the AVI InfoFrame enable, so the
+   sink loses the colorimetry and aspect ratio description for the picture
+   it is currently showing;
+ - adv7511_power_off() sets POWER_DOWN, which switches the HDMI output off
+   outright.
+
+On the modeset path adv7511_power_on() would regcache_sync() the whole
+register map back over the bootloader's configuration, and
+adv7511_bridge_mode_set() would rewrite the timing registers and reset the
+DSI internal timing generator - both make the sink renegotiate.  Finally
+adv7511_detect() reads the HPD status and, if it sees a pending HPD event,
+takes the "cable was re-plugged" branch and re-powers the encoder; report
+connected directly instead, which is true by construction.
+
+Skip those while the hand-over is pending, and mark the device as already
+powered so that the first bridge disable powers it off through the normal
+path.  The flag is consumed by the first bridge enable or disable, so DPMS
+and suspend/resume behave as they do without a boot logo.
+---
+ drivers/gpu/drm/bridge/adv7511/adv7511.h     |  8 +++
+ drivers/gpu/drm/bridge/adv7511/adv7511_drv.c | 56 +++++++++++++++++++-
+ 2 files changed, 62 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511.h b/drivers/gpu/drm/bridge/adv7511/adv7511.h
+index ddcd564ea2c8..62db131634d2 100644
+--- a/drivers/gpu/drm/bridge/adv7511/adv7511.h
++++ b/drivers/gpu/drm/bridge/adv7511/adv7511.h
+@@ -391,6 +391,14 @@ struct adv7511 {
+ 	const struct adv7511_chip_info *info;
+ 	struct platform_device *audio_pdev;
+ 
++	/*
++	 * Set from the "renesas,seamless-boot-logo" DT property: the bootloader
++	 * configured this encoder over I2C and it is already driving the sink.
++	 * Consumed by the first bridge enable or disable, whichever comes
++	 * first.
++	 */
++	bool boot_logo_handover;
++
+ 	struct cec_adapter *cec_adap;
+ 	u8   cec_addr[ADV7511_MAX_ADDRS];
+ 	u8   cec_valid_addrs;
+diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
+index af5263bd062f..6fd1d15b825e 100644
+--- a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
++++ b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
+@@ -681,6 +681,16 @@ adv7511_detect(struct adv7511 *adv7511, struct drm_connector *connector)
+ 	bool hpd;
+ 	int ret;
+ 
++	/*
++	 * The sink is displaying the bootloader's splash, so it is connected by
++	 * construction.  Answering from the hardware would risk taking the
++	 * "cable was re-plugged" branch below, which re-powers the encoder.
++	 */
++	if (adv7511->boot_logo_handover) {
++		adv7511->status = connector_status_connected;
++		return adv7511->status;
++	}
++
+ 	ret = regmap_read(adv7511->regmap, ADV7511_REG_STATUS, &val);
+ 	if (ret < 0)
+ 		return connector_status_disconnected;
+@@ -915,6 +925,16 @@ static void adv7511_bridge_atomic_enable(struct drm_bridge *bridge,
+ {
+ 	struct adv7511 *adv = bridge_to_adv7511(bridge);
+ 
++	/*
++	 * The encoder is already powered up and driving the sink.
++	 * adv7511_power_on() would regcache_sync() the whole register map back
++	 * over the bootloader's configuration, which renegotiates the link.
++	 */
++	if (adv->boot_logo_handover) {
++		adv->boot_logo_handover = false;
++		return;
++	}
++
+ 	if (adv->i2c_main->irq && adv->suspended) {
+ 		unsigned int irq;
+ 
+@@ -942,6 +962,9 @@ static void adv7511_bridge_atomic_disable(struct drm_bridge *bridge,
+ {
+ 	struct adv7511 *adv = bridge_to_adv7511(bridge);
+ 
++	/* Nothing left to preserve once the output is being switched off. */
++	adv->boot_logo_handover = false;
++
+ 	adv7511_power_off(adv);
+ }
+ 
+@@ -951,6 +974,14 @@ static void adv7511_bridge_mode_set(struct drm_bridge *bridge,
+ {
+ 	struct adv7511 *adv = bridge_to_adv7511(bridge);
+ 
++	/*
++	 * Keep the timing the bootloader programmed.  It is the same mode, and
++	 * rewriting the timing registers - in particular resetting the DSI
++	 * internal timing generator - makes the sink renegotiate.
++	 */
++	if (adv->boot_logo_handover)
++		return;
++
+ 	adv7511_mode_set(adv, mode, adj_mode);
+ }
+ 
+@@ -1250,6 +1281,9 @@ static int adv7511_probe(struct i2c_client *i2c)
+ 	adv7511->powered = false;
+ 	adv7511->status = connector_status_disconnected;
+ 	adv7511->info = i2c_get_match_data(i2c);
++	adv7511->boot_logo_handover =
++		of_property_read_bool(dev->of_node,
++				      "renesas,seamless-boot-logo");
+ 
+ 	memset(&link_config, 0, sizeof(link_config));
+ 
+@@ -1306,7 +1340,16 @@ static int adv7511_probe(struct i2c_client *i2c)
+ 	if (ret)
+ 		goto uninit_regulators;
+ 
+-	adv7511_packet_disable(adv7511, 0xffff);
++	/*
++	 * Leave the packet enables alone during a boot logo hand-over: the
++	 * bootloader set up the AVI InfoFrame that tells the sink how to
++	 * interpret the picture currently on screen.
++	 *
++	 * The register patches above are safe to apply either way - they write
++	 * exactly the values the bootloader already programmed.
++	 */
++	if (!adv7511->boot_logo_handover)
++		adv7511_packet_disable(adv7511, 0xffff);
+ 
+ 	adv7511->i2c_edid = i2c_new_ancillary_device(i2c, "edid",
+ 					ADV7511_EDID_I2C_ADDR_DEFAULT);
+@@ -1334,7 +1377,16 @@ static int adv7511_probe(struct i2c_client *i2c)
+ 
+ 	INIT_WORK(&adv7511->hpd_work, adv7511_hpd_work);
+ 
+-	adv7511_power_off(adv7511);
++	/*
++	 * Powering the encoder down here would switch the HDMI output off and
++	 * blank the bootloader's splash.  Record that the device is already up
++	 * instead; the first bridge disable powers it off through the normal
++	 * path.
++	 */
++	if (adv7511->boot_logo_handover)
++		adv7511->powered = true;
++	else
++		adv7511_power_off(adv7511);
+ 
+ 	i2c_set_clientdata(i2c, adv7511);
+ 

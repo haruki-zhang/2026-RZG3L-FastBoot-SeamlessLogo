@@ -1,0 +1,75 @@
+From 5f6d744db21f51a932f59824b6ba5a49c93189b9 Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Wed, 5 Aug 2026 11:51:47 +0900
+Subject: [PATCH] arm64: dts: renesas: rzg3l-smarc: declare the boot logo
+ display hand-over
+
+The seamless boot logo only works if every driver on the DRAM -> VSPD ->
+DU -> DSI -> ADV7535 -> HDMI path inherits the pipeline U-Boot started
+instead of re-initialising it.  Which of the two it should do is a
+property of the boot firmware, not of the SoC or of the board, so it has
+to be told to the kernel explicitly rather than compiled in: the same
+kernel must still come up on a board whose U-Boot leaves the display off.
+
+Add "renesas,seamless-boot-logo" to the four nodes that own a stage of
+that path.  Each driver reads the flag from its own node and consumes it
+on the first modeset, so a build without a boot logo, or any other RZ
+board sharing these drivers, is completely unaffected.
+
+Also drop the ADV7535 interrupt.  Hotplug is pointless once the connector
+is pinned to the single mode U-Boot programmed and always reports
+connected, and an HPD event would only schedule re-probes that poke a
+bridge the hand-over deliberately leaves alone.
+---
+ .../boot/dts/renesas/r9a08g046l48-smarc.dts   | 24 ++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+index 2f46686cada1..eea3d7254458 100644
+--- a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
++++ b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+@@ -599,13 +599,28 @@ channel1 {
+ };
+ 
+ #if (RZG3L_SMARC_MIPI_DSI_ENABLE)
++/*
++ * "renesas,seamless-boot-logo" tells each driver on the DRAM -> HDMI path
++ * that U-Boot handed it over a pipeline that is already configured and
++ * scanning out, and that it must therefore inherit that pipeline instead of
++ * re-creating it.  Every driver consumes the flag on its first modeset (or
++ * its first disable, whichever comes first) and behaves stock afterwards.
++ */
++&vspd {
++	renesas,seamless-boot-logo;
++};
++
+ &du {
+ 	status = "okay";
++
++	renesas,seamless-boot-logo;
+ };
+ 
+ &dsi {
+ 	status = "okay";
+ 
++	renesas,seamless-boot-logo;
++
+ 	ports {
+ 		port@1 {
+ 			dsi0_out: endpoint {
+@@ -622,7 +637,14 @@ adv7535: hdmi@3d {
+ 		reg = <0x3d>, <0x2d>, <0x4d>, <0x5d>;
+ 		reg-names = "main", "cec", "edid", "packet";
+ 
+-		interrupts-extended = <&pinctrl RZG3L_GPIO(K, 3) IRQ_TYPE_EDGE_FALLING>;
++		renesas,seamless-boot-logo;
++
++		/*
++		 * No "interrupts-extended": with the boot logo hand-over the
++		 * connector is pinned to the single mode U-Boot programmed and
++		 * always reports connected, so hotplug can only trigger
++		 * re-probes that talk to a bridge we deliberately do not touch.
++		 */
+ 		clocks = <&osc1>;
+ 		clock-names = "cec";
+ 		avdd-supply = <&reg_1p8v>;
