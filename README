@@ -1,0 +1,138 @@
+meta-rzg3l-fast-boot-base
+==========================
+
+This layer contains the graphics-stack-independent RZ/G3L fast-boot work:
+
+  Phase 1  Device-tree pruning and Linux kernel configuration trimming.
+  Phase 2  Rootfs slimming and systemd startup-order optimisation.
+
+It intentionally keeps the BSP's Weston graphics stack. Build
+`core-image-weston` with the `rz-vlp-fast` distro to reproduce the phase-2
+baseline. The separate `meta-rzg3l-fast-boot-qt-eglfs` layer adds phase 3 and
+replaces Weston with Qt6/EGLFS.
+
+Serial console silencing and bootdelay are U-Boot environment settings and are
+not baked into either layer. See section V.
+
+
+I. What this layer changes
+==========================
+
+  Distro (conf/distro/rz-vlp-fast.conf)
+    - derives from rz-vlp and pins linux-renesas 6.12
+    - removes unused DISTRO_FEATURES and MACHINE_FEATURES
+    - removes the RZ/VLP development and benchmark package groups
+    - disables autostart for services whose features were removed
+    - fixes SERIAL_CONSOLES to use ttySC3
+
+  Kernel (recipes-kernel/linux/)
+    - the DT patch disables unused network, USB, PCIe, CAN, camera, audio,
+      extra UART, RTC and related peripheral nodes
+    - fastboot.cfg removes unused kernel subsystems and drivers while keeping
+      the display, boot storage and thermal-protection paths
+
+  Userspace
+    - fastboot-mask-units.bbclass masks vconsole setup and the invalid ttyS0
+      getty during rootfs construction
+    - systemd-conf_%.bbappend keeps journald in RAM and stops serial forwarding
+    - weston-init.bbappend lets Weston start in parallel with multi-user.target
+
+
+II. Required layers
+===================
+
+Use a standard RZ/G3L VLP project with at least:
+
+  poky/meta
+  poky/meta-poky
+  poky/meta-yocto-bsp
+  meta-openembedded/meta-oe
+  meta-openembedded/meta-python
+  meta-openembedded/meta-multimedia
+  meta-arm/meta-arm-toolchain
+  meta-arm/meta-arm
+  meta-renesas/meta-rz-bsp
+  meta-renesas/meta-rz-distro
+  meta-rz-features/meta-rz-codecs
+  meta-rz-features/meta-rz-graphics
+  meta-rzg3l-fast-boot-base
+
+This layer has priority 20 and must follow the Renesas BSP, distro and graphics
+layers in bblayers.conf.
+
+Tested with Yocto scarthgap, RZ/G3L BSP v1.0.0-rc1 and linux-renesas
+6.12.46-cip8.
+
+
+III. Build the phase-2 Weston baseline
+======================================
+
+  $ source poky/oe-init-build-env build
+  $ bitbake-layers add-layer ../meta-rzg3l-fast-boot-base
+
+Set in conf/local.conf:
+
+  MACHINE = "smarc-rzg3l"
+  DISTRO  = "rz-vlp-fast"
+
+Then build:
+
+  $ bitbake core-image-weston
+
+Useful metadata checks:
+
+  $ bitbake-layers show-layers
+  $ bitbake-layers show-appends
+  $ bitbake -e core-image-weston | \
+        grep -E '^(DISTRO|PREFERRED_VERSION_linux-renesas|SERIAL_CONSOLES)='
+
+
+IV. Add the Qt/EGLFS phase
+==========================
+
+Do not copy the base files into another layer. Add the overlay after this layer:
+
+  meta-qt6
+  meta-rz-qt6
+  meta-rzg3l-fast-boot-base
+  meta-rzg3l-fast-boot-qt-eglfs
+
+Then select:
+
+  DISTRO = "rz-vlp-fast-qt-eglfs"
+
+and build:
+
+  $ bitbake core-image-hmi
+
+
+V. U-Boot environment
+=====================
+
+The stock bootcmd resets the environment before loading the image:
+
+  bootcmd = env default -a; run bootcmd_check; run bootimage
+
+Remove that reset before saving fast-boot settings:
+
+  => setenv bootcmd 'run bootcmd_check; run bootimage'
+  => setenv bootdelay 0
+  => setenv prodemmcbootargs 'setenv bootargs rw rootwait root=/dev/mmcblk0p2 quiet loglevel=4 systemd.show_status=0'
+  => setenv prodsdbootargs  'setenv bootargs rw rootwait root=/dev/mmcblk1p2 quiet loglevel=4 systemd.show_status=0'
+  => saveenv
+  => reset
+
+Dropping earlycon avoids replaying the kernel ring buffer synchronously over
+the 115200-baud UART. Re-add earlycon when debugging an early kernel failure.
+
+
+VI. Product constraints
+=======================
+
+The DT profile disables Ethernet, USB, PCIe, CAN, camera, audio, i2c0/i2c1/
+i2c3, extra UARTs and RTC. Restore both the DT nodes and their matching kernel
+and userspace features before adding any of those product functions.
+
+The microSD controller stays enabled for the development boot loop. A fixed
+eMMC product can disable it after manufacturing and recovery requirements are
+settled.

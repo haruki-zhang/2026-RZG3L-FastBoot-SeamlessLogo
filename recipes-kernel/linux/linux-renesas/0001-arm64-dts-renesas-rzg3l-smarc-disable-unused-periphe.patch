@@ -1,0 +1,100 @@
+From c3f41f0b1f10bf035b042022909e66a56e6e5bb6 Mon Sep 17 00:00:00 2001
+From: OpenEmbedded <oe.patch@oe>
+Date: Wed, 29 Jul 2026 10:28:18 +0900
+Subject: [PATCH] arm64: dts: renesas: rzg3l-smarc: disable unused peripherals
+ for fast boot
+
+---
+ .../boot/dts/renesas/r9a08g046l48-smarc.dts   |  4 ++
+ .../dts/renesas/rzg3l-smarc-fastboot.dtsi     | 62 +++++++++++++++++++
+ 2 files changed, 66 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi
+
+diff --git a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+index 9636e1adb225..08857e9268b9 100644
+--- a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
++++ b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+@@ -291,6 +291,7 @@ sound_card {
+ 		compatible = "audio-graph-card";
+ 		label = "HDMI-Audio";
+ 		dais = <&i2s2_port>;
++		status = "disable";
+ 	};
+ #endif
+ };
+@@ -905,3 +906,6 @@ i2s2_cpu_endpoint: endpoint {
+ 	};
+ };
+ #endif
++
++/* RZG3L Fast-boot solution DTS prune */
++#include "rzg3l-smarc-fastboot.dtsi"
+\ No newline at end of file
+diff --git a/arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi b/arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi
+new file mode 100644
+index 000000000000..1e520aabf87b
+--- /dev/null
++++ b/arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi
+@@ -0,0 +1,62 @@
++// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++/*
++ * RZ/G3L SMARC fast-boot trimming overlay (fast-boot device-tree overlay) */
++
++/* ===== Network (Ethernet x2) ===== */
++&eth0       { status = "disabled"; };
++&eth1       { status = "disabled"; };
++
++/* ===== USB (all: PHY + EHCI/OHCI + HSUSB) ===== */
++&phyrst     { status = "disabled"; };
++&usb2_phy0  { status = "disabled"; };
++&usb2_phy1  { status = "disabled"; };
++&ehci0      { status = "disabled"; };
++&ohci0      { status = "disabled"; };
++&hsusb0     { status = "disabled"; };
++&ehci1      { status = "disabled"; };
++&ohci1      { status = "disabled"; };
++
++/* ===== microSD: rootfs lives on mmcblk1p2, MUST stay enabled ===== */
++/* &sdhi1   { status = "disabled"; };   // only safe once rootfs is moved to eMMC */
++
++/* ===== PCIe (skip empty-slot enumeration, ~0.8s) ===== */
++&pcie       { status = "disabled"; };
++
++/* ===== SPI (RSPI2) ===== */
++&spi2       { status = "disabled"; };
++
++/* ===== CAN (along with channel0/1) ===== */
++&canfd      { status = "disabled"; };
++
++/* ===== Camera (CRU / CSI2 / ISU / OV5645@i2c1) ===== */
++&cru        { status = "disabled"; };
++&csi2       { status = "disabled"; };
++&isu2       { status = "disabled"; };
++&i2c1       { status = "disabled"; };   /* hosts OV5645 */
++
++/* ===== Audio (SSI0/SSI2 + PDM + DA7212@i2c3 + simple-audio-card) ===== */
++&ssi0       { status = "disabled"; };
++&ssi2       { status = "disabled"; };
++&pdm        { status = "disabled"; };
++&snd_rzg3l  { status = "disabled"; };
++&i2c3       { status = "disabled"; };   /* hosts DA7212 */
++
++/* ===== Audio clock generator versa3 (audio use only) -> also disable i2c0 ===== */
++&i2c0       { status = "disabled"; };   /* along with versa3(clock-generator@68) */
++
++/* ===== ADC0 (adc1 provides TSU thermal protection; kept by default, disable with care) ===== */
++&adc0       { status = "disabled"; };
++/* &adc1    { status = "disabled"; };   // disabling loses CPU overheat protection; evaluate cooling carefully */
++
++/* ===== PWM / output protection (no backlight load on HDMI) ===== */
++&gpt        { status = "disabled"; };
++&poegd      { status = "disabled"; };
++
++/* ===== Extra UARTs (serial0/serial1; keep scif0 as console) ===== */
++&rsci2      { status = "disabled"; };
++&rsci3      { status = "disabled"; };
++
++/* ===== RTC (optional; VBATT clock is crit_mod_clks, still always on) ===== */
++&rtc        { status = "disabled"; };
++&vbattb     { status = "disabled"; };
++
