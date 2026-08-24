@@ -39,8 +39,9 @@ I. What this layer changes
       which exist only as device units for udev and systemd to walk (VII.1)
 
   Userspace
-    - fastboot-mask-units.bbclass masks vconsole setup and the invalid ttyS0
-      getty during rootfs construction
+    - fastboot-systemd-tweaks.bbclass masks vconsole setup, the invalid ttyS0
+      getty and systemd's network/identity services, and credits the saved
+      random seed so sysinit.target stops waiting for the CRNG (VII.2)
     - systemd-conf_%.bbappend keeps journald in RAM and stops serial forwarding
     - weston-init.bbappend lets Weston start in parallel with multi-user.target
 
@@ -200,6 +201,45 @@ goes with it: rz-vlp-fast already removes wifi and bluetooth from
 DISTRO_FEATURES, but the kernel still built cfg80211/mac80211 in - visible in
 the boot log as the regulatory.db load failing - and rfkill added two more
 device units.
+
+
+VII.2 sysinit.target - 2204 ms
+------------------------------
+
+`critical-chain` names systemd-resolved.service as the last link before
+sysinit.target, but the plot shows four services finishing within 110 ms of
+each other, all of them gating the same target:
+
+  systemd-timesyncd      1.886 .. 2.556   669 ms
+  systemd-random-seed    1.623 .. 2.622   998 ms   <- crng init done @2.590
+  systemd-resolved       1.873 .. 2.640   766 ms   <- on the critical chain
+  systemd-networkd       1.926 .. 2.665   739 ms
+  sysinit.target                 2.757
+
+So both causes have to be dealt with in the same step; removing either one
+alone just promotes the other to be the new gate.
+
+  Network and identity services. The DT profile has no Ethernet, so networkd,
+  resolved, timesyncd, userdbd and network-generator have nothing to do -
+  2.51 service-seconds of pure waste, and resolved is on the chain. They ship
+  inside the systemd recipe, so SYSTEMD_AUTO_ENABLE cannot reach them; they are
+  masked in the rootfs instead. See FASTBOOT_MASKED_UNITS.
+
+  Entropy. systemd-random-seed is not slow, it is blocked: after writing the
+  saved seed to /dev/urandom it generates a fresh one to write back, and that
+  blocks in getrandom() until the CRNG initialises. Crediting the seed
+  initialises the CRNG immediately, so the second half stops blocking. The
+  class comment records why crediting is safe on this image and what the
+  first-boot-after-flash caveat is.
+
+  fastboot.cfg also enables CONFIG_RANDOM_TRUST_BOOTLOADER, which is inert
+  until U-Boot publishes /chosen/rng-seed but will remove the first-boot case
+  too once it does, and drops CONFIG_RANDOMIZE_BASE, which the boot log shows
+  was never taking effect anyway.
+
+Step VII.1 helps here as well: dev-mmcblk0p2.device settles at 2.757s, exactly
+when sysinit.target completes, because udev's queue is clogged with the 512
+pty events.
 
 
 VII.4 Re-measuring
