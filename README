@@ -44,6 +44,8 @@ I. What this layer changes
       random seed so sysinit.target stops waiting for the CRNG (VII.2)
     - systemd-conf_%.bbappend keeps journald in RAM and stops serial forwarding
     - weston-init.bbappend lets Weston start in parallel with multi-user.target
+      and runs the compositor directly instead of inside a logind session,
+      which removes user@998.service from the critical path (VII.3)
 
 
 II. Required layers
@@ -145,6 +147,14 @@ The microSD controller stays enabled for the development boot loop. A fixed
 eMMC product can disable it after manufacturing and recovery requirements are
 settled.
 
+Phase 2b adds two constraints:
+
+  - Weston runs as root, without a logind session. VT switching is gone. See
+    VII.3 for how to revert just this if a product needs a non-root compositor.
+  - systemd's resolved, networkd, timesyncd and userdbd are masked. Adding any
+    network function back means un-masking them together with the DT node and
+    the DISTRO_FEATURES entry.
+
 
 VII. Phase 2b: the boot critical path
 =====================================
@@ -169,6 +179,11 @@ Baseline (RZ/G3L EVK, phase 2 + meta-rzg3l-fast-logo, eMMC boot):
   weston.service                             4.069 .. 6.727  2658 ms   VII.3
   ---------------------------------------------------------------
   graphical.target                                   6.729
+
+VII.1 to VII.3 remove one segment each. Because the segments are serial the
+estimates add: roughly -1.1 s, -0.6 s and -2.1 s, so graphical.target should
+land near 2.9 s. Those are projections from the baseline plot, not measured
+results - re-measure per VII.4 and correct this table.
 
 `systemd-analyze plot` uses a kernel-relative x axis; `critical-chain` prints
 userspace-relative `@` times. The two differ by exactly the 553 ms kernel
@@ -240,6 +255,51 @@ alone just promotes the other to be the new gate.
 Step VII.1 helps here as well: dev-mmcblk0p2.device settles at 2.757s, exactly
 when sysinit.target completes, because udev's queue is clogged with the 512
 pty events.
+
+
+VII.3 weston.service - 2658 ms
+------------------------------
+
+Stock weston.service runs the compositor as User=weston with
+PAMName=weston-autologin. pam_systemd asks logind to create a session, and
+logind brings up a complete per-user service manager for uid 998. Lining up
+`blame`, the plot and the dmesg audit records:
+
+  4.069s  systemd forks the weston executor, PAM starts
+  4.325s  user@998.service starts
+  6.153s  user@998.service ready                    (blame: 1.827s)
+  6.187s  loginuid set, PAM session established     (audit, comm="(weston)")
+  6.727s  weston active -> graphical.target
+
+2118 ms of the 2658 ms is session setup. The compositor itself needs 540 ms.
+
+weston-init.bbappend therefore drops User=, Group=, PAMName= and the
+systemd-user-sessions.service dependency, so the compositor runs directly with
+no logind session and no user manager.
+
+The Wayland socket is unaffected: weston.socket keeps SocketUser=weston and
+keeps listening on /run/wayland-0, weston inherits the descriptor, and
+/etc/profile.d/weston-socket.sh keeps pointing clients at that absolute path.
+Nothing ever referenced /run/user/998. The weston user and its input/video/
+render group memberships stay in place because weston.socket still needs the
+user to exist. weston does still want XDG_RUNTIME_DIR, so the bbappend gives
+it a private /run/weston through RuntimeDirectory=.
+
+systemd-logind.service is deliberately *not* masked: the serial console login
+still goes through pam_systemd, and logind is off the critical path anyway
+(2.841s .. 3.137s, in parallel).
+
+This is the one step in phase 2b with a trade-off rather than a pure removal.
+The compositor now runs as root and uses weston's launcher-direct backend
+instead of the logind backend; the capability actually lost is VT switching,
+which has no user on this board. If a product cannot accept a root compositor,
+revert this bbappend hunk - VII.1 and VII.2 are independent of it. The failure
+mode if the assumption is wrong is loud (weston does not start,
+graphical.target times out), never silent.
+
+The bbappend asserts that every line it strips is present and calls bbfatal if
+not, so a weston-init update cannot quietly reintroduce the login session and
+the 2.1 s with it.
 
 
 VII.4 Re-measuring
