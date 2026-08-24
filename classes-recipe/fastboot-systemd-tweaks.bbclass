@@ -107,8 +107,9 @@ fastboot_mask_units() {
 #
 # Consequence to be aware of: the very first boot after flashing has no seed to
 # credit and still pays the wait. Removing that last case needs the bootloader
-# to publish /chosen/rng-seed; fastboot.cfg already enables
-# CONFIG_RANDOM_TRUST_BOOTLOADER, so only the U-Boot side is outstanding.
+# to publish /chosen/rng-seed. No kernel option is involved: 6.12 defines
+# "trust_bootloader __initdata = true" in drivers/char/random.c, so the kernel
+# already credits a bootloader seed and the work is entirely on the U-Boot side.
 fastboot_random_seed_credit() {
     seeddir=${IMAGE_ROOTFS}${sysconfdir}/systemd/system/systemd-random-seed.service.d
     install -d $seeddir

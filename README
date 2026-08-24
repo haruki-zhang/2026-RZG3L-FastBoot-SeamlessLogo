@@ -211,11 +211,19 @@ does not settle until 2.757s.
 
 Fixed in fastboot.cfg by dropping CONFIG_LEGACY_PTYS. CONFIG_UNIX98_PTYS
 (/dev/ptmx) is asserted positively in the same fragment so a defconfig change
-can never leave the board with no pty support at all. The wireless subsystem
-goes with it: rz-vlp-fast already removes wifi and bluetooth from
-DISTRO_FEATURES, but the kernel still built cfg80211/mac80211 in - visible in
-the boot log as the regulatory.db load failing - and rfkill added two more
-device units.
+can never leave the board with no pty support at all.
+
+Note the Image does not get smaller: legacy ptys are only a few KB of code.
+The win here is unit count, not size.
+
+The wireless subsystem goes at the same time: rz-vlp-fast already removes wifi
+and bluetooth from DISTRO_FEATURES, but the kernel still built cfg80211/mac80211
+in - visible in the boot log as the regulatory.db load failing - and rfkill
+added two more device units. CONFIG_WLAN has to be the one disabled;
+drivers/net/wireless/Kconfig does "select WIRELESS" and WLAN is default y, so
+turning off WIRELESS alone is silently reverted by kconfig. Always verify a
+negative fragment entry against the generated .config (VII.4) rather than
+assuming it took.
 
 
 VII.2 sysinit.target - 2204 ms
@@ -247,10 +255,13 @@ alone just promotes the other to be the new gate.
   class comment records why crediting is safe on this image and what the
   first-boot-after-flash caveat is.
 
-  fastboot.cfg also enables CONFIG_RANDOM_TRUST_BOOTLOADER, which is inert
-  until U-Boot publishes /chosen/rng-seed but will remove the first-boot case
-  too once it does, and drops CONFIG_RANDOMIZE_BASE, which the boot log shows
-  was never taking effect anyway.
+  There is no kernel option for the first-boot-after-flash case. 6.12 removed
+  CONFIG_RANDOM_TRUST_BOOTLOADER; drivers/char/random.c now defines
+  "trust_bootloader __initdata = true" and only random.trust_bootloader= on the
+  command line turns it off, so the kernel already credits a bootloader seed.
+  The outstanding work is entirely on the U-Boot side - publishing
+  /chosen/rng-seed. fastboot.cfg does drop CONFIG_RANDOMIZE_BASE, which the
+  boot log shows was never taking effect anyway.
 
 Step VII.1 helps here as well: dev-mmcblk0p2.device settles at 2.757s, exactly
 when sysinit.target completes, because udev's queue is clogged with the 512
@@ -305,7 +316,16 @@ the 2.1 s with it.
 VII.4 Re-measuring
 ------------------
 
-  # on the target
+Check the kernel side on the build host first - a negative fragment entry can
+be silently reverted by a "select" from another symbol, or name a symbol that
+no longer exists:
+
+  $ bitbake -c kernel_configcheck -f linux-renesas
+  $ C=$(find tmp/work/*/linux-renesas/*/linux-*-build -name .config)
+  $ grep -E '^(CONFIG_X=|# CONFIG_X is not set)' $C   # for each X in fastboot.cfg
+
+Then on the target:
+
   systemd-analyze
   systemd-analyze blame
   systemd-analyze critical-chain graphical.target
