@@ -17,7 +17,9 @@ Serial console silencing and bootdelay are U-Boot environment settings and are
 not baked into either layer. See section V.
 
 Phase 2b is documented in section VII, including how each figure was measured
-and what to re-measure after a change.
+and what to re-measure after a change. docs/fast-boot-method.md generalises the
+method behind it - the measurement discipline, the cost taxonomy and the three
+patterns - for reuse on other boards and images.
 
 
 I. What this layer changes
