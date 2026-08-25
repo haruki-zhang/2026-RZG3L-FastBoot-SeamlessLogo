@@ -3,6 +3,8 @@ meta-rzg3l-fast-boot-base
 
 This layer contains the graphics-stack-independent RZ/G3L fast-boot work:
 
+  Phase 0   U-Boot environment: no boot delay, no environment reset, quiet
+            kernel command line.
   Phase 1   Device-tree pruning and Linux kernel configuration trimming.
   Phase 2   Rootfs slimming and systemd startup-order optimisation.
   Phase 2b  Removal of the three remaining blocks on the boot critical path,
@@ -13,8 +15,10 @@ It intentionally keeps the BSP's Weston graphics stack. Build
 The separate `meta-rzg3l-fast-boot-qt-eglfs` layer adds phase 3 and replaces
 Weston with Qt6/EGLFS.
 
-Serial console silencing and bootdelay are U-Boot environment settings and are
-not baked into either layer. See section V.
+The U-Boot environment settings are compiled into the bootloader defaults by
+this layer, so no manual setenv session is needed on a freshly flashed board.
+Section V covers the one case that still needs a command: a board that already
+carries a saved environment.
 
 Phase 2b is documented in section VII, including how each figure was measured
 and what to re-measure after a change. docs/fast-boot-method.md generalises the
@@ -24,6 +28,14 @@ patterns - for reuse on other boards and images.
 
 I. What this layer changes
 ==========================
+
+  U-Boot (recipes-bsp/u-boot/)
+    - fastboot.cfg sets CONFIG_BOOTDELAY=0, so autoboot has no countdown
+    - the patch drops "env default -a" from bootcmd, which otherwise reset the
+      whole environment on every boot, and rewrites prodemmcbootargs /
+      prodsdbootargs to a quiet kernel command line without earlycon
+    - the bbappend then asserts the compiled-in default environment really
+      contains those values (section V)
 
   Distro (conf/distro/rz-vlp-fast.conf)
     - derives from rz-vlp and pins linux-renesas 6.12
@@ -97,6 +109,8 @@ Useful metadata checks:
   $ bitbake-layers show-appends
   $ bitbake -e core-image-weston | \
         grep -E '^(DISTRO|PREFERRED_VERSION_linux-renesas|SERIAL_CONSOLES)='
+  $ grep -E '^(bootdelay|bootcmd|prod.*bootargs)=' \
+        tmp/deploy/images/smarc-rzg3l/u-boot-initial-env-smarc-rzg3l
 
 
 IV. Add the Qt/EGLFS phase
@@ -121,21 +135,71 @@ and build:
 V. U-Boot environment
 =====================
 
-The stock bootcmd resets the environment before loading the image:
+Phase 0 is compiled into the bootloader by recipes-bsp/u-boot/, so there is
+nothing to type on a freshly flashed board. `bitbake u-boot` produces this
+default environment - the full text is deployed as u-boot-initial-env-<machine>
+in tmp/deploy/images/smarc-rzg3l:
 
-  bootcmd = env default -a; run bootcmd_check; run bootimage
+  bootdelay=0
+  bootcmd=run bootcmd_check;run bootimage
+  prodemmcbootargs=setenv bootargs rw rootwait root=/dev/mmcblk0p2 quiet systemd.show_status=false
+  prodsdbootargs=setenv bootargs rw rootwait root=/dev/mmcblk1p2 quiet systemd.show_status=false
 
-Remove that reset before saving fast-boot settings:
+Against the stock BSP that is three changes:
 
-  => setenv bootcmd 'run bootcmd_check; run bootimage'
-  => setenv bootdelay 0
-  => setenv prodemmcbootargs 'setenv bootargs rw rootwait root=/dev/mmcblk0p2 quiet loglevel=4 systemd.show_status=0'
-  => setenv prodsdbootargs  'setenv bootargs rw rootwait root=/dev/mmcblk1p2 quiet loglevel=4 systemd.show_status=0'
-  => saveenv
-  => reset
+  bootdelay          2 -> 0. No countdown before autoboot. A keypress on the
+                     serial console still interrupts it.
 
-Dropping earlycon avoids replaying the kernel ring buffer synchronously over
-the 115200-baud UART. Re-add earlycon when debugging an early kernel failure.
+  bootcmd            loses the leading "env default -a". The stock value reset
+                     the entire environment on every boot, one command before
+                     using it, which both discarded any saved tuning and made
+                     the environment effectively read-only.
+
+  prod*bootargs      lose "earlycon" and gain "quiet systemd.show_status=false".
+                     earlycon replays the kernel ring buffer synchronously over
+                     the 115200-baud UART and keeps every later printk at that
+                     speed; quiet raises the console loglevel and show_status
+                     stops the per-unit systemd lines. Nothing is lost from the
+                     kernel log or the journal, only from the serial output.
+                     Re-add earlycon when debugging a failure that happens
+                     before the real console is registered.
+
+Both prod*bootargs are set, not just the eMMC one, so an SD boot of the same
+image behaves identically; bootcmd_check picks between them.
+
+These settings live in the bootloader, not in the rootfs, so the board only
+picks them up once the newly built fip has been written to it - through the
+wic image on SD (the .wks places fip at FIP_WIC_OFFSET) or through the flash
+writer for eMMC/QSPI. Reflashing only the rootfs leaves the old bootloader,
+and with it the old two-second delay.
+
+  Boards that already have a saved environment
+  -------------------------------------------
+  The values above are the compiled-in *defaults*. U-Boot uses them only while
+  the environment area in eMMC is empty or fails its CRC check. A board that
+  has had `saveenv` run on it - for example one that was tuned by hand before
+  this layer existed - keeps its stored copy and ignores the new defaults.
+  Switch such a board over once, after flashing the new fip:
+
+    => env default -a
+    => saveenv
+    => reset
+
+  Verify with `env print bootdelay bootcmd prodemmcbootargs`.
+
+  How the settings are implemented
+  --------------------------------
+  bootdelay is a Kconfig symbol, so it is set in a defconfig fragment
+  (recipes-bsp/u-boot/u-boot/fastboot.cfg). bootcmd and the prod*bootargs
+  helpers come from CONFIG_BOOTCOMMAND and CFG_EXTRA_ENV_SETTINGS in
+  include/configs/smarc-rzg3l.h, which Kconfig cannot reach, so they are
+  patched (0001-configs-smarc-rzg3l-fast-boot-default-environment.patch).
+
+  Either mechanism can fail silently on a BSP update - a fragment entry can be
+  reverted by a "select" elsewhere, and a patch can still apply around a moved
+  default. The bbappend therefore re-reads u-boot-initial-env after do_compile
+  and calls bbfatal if any of the four entries above is missing, so the board
+  can never quietly go back to a two-second delay and an earlycon console.
 
 
 VI. Product constraints
