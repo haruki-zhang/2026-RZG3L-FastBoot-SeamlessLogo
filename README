@@ -32,8 +32,9 @@ I. What this layer changes
   U-Boot (recipes-bsp/u-boot/)
     - fastboot.cfg sets CONFIG_BOOTDELAY=0, so autoboot has no countdown
     - the patch drops "env default -a" from bootcmd, which otherwise reset the
-      whole environment on every boot, and rewrites prodemmcbootargs /
-      prodsdbootargs to a quiet kernel command line without earlycon
+      whole environment on every boot, and rewrites prodemmcbootargs to a quiet
+      kernel command line without earlycon. prodsdbootargs is left at the BSP
+      default, so only the eMMC product path goes quiet
     - the bbappend then asserts the compiled-in default environment really
       contains those values (section V)
 
@@ -143,7 +144,6 @@ in tmp/deploy/images/smarc-rzg3l:
   bootdelay=0
   bootcmd=run bootcmd_check;run bootimage
   prodemmcbootargs=setenv bootargs rw rootwait root=/dev/mmcblk0p2 quiet systemd.show_status=false
-  prodsdbootargs=setenv bootargs rw rootwait root=/dev/mmcblk1p2 quiet systemd.show_status=false
 
 Against the stock BSP that is three changes:
 
@@ -155,17 +155,24 @@ Against the stock BSP that is three changes:
                      using it, which both discarded any saved tuning and made
                      the environment effectively read-only.
 
-  prod*bootargs      lose "earlycon" and gain "quiet systemd.show_status=false".
-                     earlycon replays the kernel ring buffer synchronously over
-                     the 115200-baud UART and keeps every later printk at that
-                     speed; quiet raises the console loglevel and show_status
-                     stops the per-unit systemd lines. Nothing is lost from the
-                     kernel log or the journal, only from the serial output.
-                     Re-add earlycon when debugging a failure that happens
-                     before the real console is registered.
+  prodemmcbootargs   loses "earlycon" and gains "quiet
+                     systemd.show_status=false". earlycon replays the kernel
+                     ring buffer synchronously over the 115200-baud UART and
+                     keeps every later printk at that speed; quiet raises the
+                     console loglevel and show_status stops the per-unit
+                     systemd lines. Nothing is lost from the kernel log or the
+                     journal, only from the serial output. Re-add earlycon when
+                     debugging a failure that happens before the real console
+                     is registered.
 
-Both prod*bootargs are set, not just the eMMC one, so an SD boot of the same
-image behaves identically; bootcmd_check picks between them.
+prodsdbootargs stays at the BSP default, earlycon and all. eMMC is the product
+boot path and is the one made quiet; SD is the development boot loop (see
+section VI), where a verbose console is worth more than the milliseconds.
+bootcmd_check picks between the two, so the same image boots quiet from eMMC
+and chatty from SD.
+
+The other two changes are not device-specific: bootdelay and bootcmd apply
+whichever loader bootcmd_check ends up running.
 
 These settings live in the bootloader, not in the rootfs, so the board only
 picks them up once the newly built fip has been written to it - through the
@@ -190,16 +197,18 @@ and with it the old two-second delay.
   How the settings are implemented
   --------------------------------
   bootdelay is a Kconfig symbol, so it is set in a defconfig fragment
-  (recipes-bsp/u-boot/u-boot/fastboot.cfg). bootcmd and the prod*bootargs
-  helpers come from CONFIG_BOOTCOMMAND and CFG_EXTRA_ENV_SETTINGS in
+  (recipes-bsp/u-boot/u-boot/fastboot.cfg). bootcmd and prodemmcbootargs come
+  from CONFIG_BOOTCOMMAND and CFG_EXTRA_ENV_SETTINGS in
   include/configs/smarc-rzg3l.h, which Kconfig cannot reach, so they are
   patched (0001-configs-smarc-rzg3l-fast-boot-default-environment.patch).
 
   Either mechanism can fail silently on a BSP update - a fragment entry can be
   reverted by a "select" elsewhere, and a patch can still apply around a moved
   default. The bbappend therefore re-reads u-boot-initial-env after do_compile
-  and calls bbfatal if any of the four entries above is missing, so the board
+  and calls bbfatal if any of the three entries above is missing, so the board
   can never quietly go back to a two-second delay and an earlycon console.
+  prodsdbootargs is not checked: this layer does not set it, and asserting a
+  BSP value we do not own would fail the build over an unrelated change.
 
 
 VI. Product constraints

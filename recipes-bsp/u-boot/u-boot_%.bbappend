@@ -12,9 +12,12 @@
 #                  turns into an environment variable, so it belongs in a
 #                  defconfig fragment -> fastboot.cfg
 #
-#   bootcmd and the prod*bootargs helpers live in CONFIG_BOOTCOMMAND and
+#   bootcmd and prodemmcbootargs live in CONFIG_BOOTCOMMAND and
 #                  CFG_EXTRA_ENV_SETTINGS in include/configs/smarc-rzg3l.h,
 #                  which Kconfig cannot reach -> 0001-*.patch
+#
+# prodsdbootargs is left alone. Only the eMMC command line is made quiet; the
+# SD path is the development boot loop and keeps the BSP's verbose console.
 #
 # Do not move bootdelay into the header as well: env_default.h already emits a
 # "bootdelay=" entry from CONFIG_BOOTDELAY, and a second one out of
@@ -57,10 +60,13 @@ fastboot_uboot_expect_env() {
 fastboot_uboot_check_env() {
     # One call per entry: the values contain spaces, so a single
     # whitespace-separated list would not survive word splitting.
+    #
+    # Only what this layer sets is checked. prodsdbootargs is intentionally
+    # absent: asserting a value we do not own would turn an ordinary BSP
+    # command-line change on the SD path into a build failure here.
     fastboot_uboot_expect_env "$1" 'bootdelay=0'
     fastboot_uboot_expect_env "$1" 'bootcmd=run bootcmd_check;run bootimage'
     fastboot_uboot_expect_env "$1" 'prodemmcbootargs=setenv bootargs rw rootwait root=/dev/mmcblk0p2 quiet systemd.show_status=false'
-    fastboot_uboot_expect_env "$1" 'prodsdbootargs=setenv bootargs rw rootwait root=/dev/mmcblk1p2 quiet systemd.show_status=false'
 }
 
 do_compile:append() {

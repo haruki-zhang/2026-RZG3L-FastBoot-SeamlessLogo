@@ -5,9 +5,9 @@ Subject: [PATCH] configs: smarc-rzg3l: fast-boot default environment
 Bake the fast-boot U-Boot environment into the built-in defaults so the
 board does not need a manual setenv/saveenv session after flashing.
 
-Three changes, all inside the non-distro-boot branch of the header, which
-is the branch smarc-rzg3l_defconfig selects (CONFIG_RZG3L_DISTRO_BOOT is
-not set there):
+Two changes, both inside the non-distro-boot branch of the header, which is
+the branch smarc-rzg3l_defconfig selects (CONFIG_RZG3L_DISTRO_BOOT is not set
+there):
 
 1. bootcmd loses the leading "env default -a".
 
@@ -17,8 +17,11 @@ not set there):
    command before it would have been used. It also makes the environment
    effectively read-only, which is not what a product wants.
 
-2. prodemmcbootargs / prodsdbootargs lose "earlycon" and gain
-   "quiet systemd.show_status=false".
+   This one is not specific to a boot device: bootcmd_check picks the loader,
+   so both the eMMC and the SD path stop being reset.
+
+2. prodemmcbootargs loses "earlycon" and gains "quiet
+   systemd.show_status=false".
 
    earlycon replays the kernel ring buffer synchronously over the
    115200-baud UART, and every subsequent printk is emitted at the same
@@ -30,28 +33,29 @@ not set there):
    Re-add earlycon when debugging an early kernel failure - it is the only
    way to see output from before the real console is registered.
 
-   Both variables are changed, not just the eMMC one, so an SD boot of the
-   same image behaves identically. bootcmd_check picks between them.
+prodsdbootargs is deliberately left at the BSP default, earlycon and all. The
+eMMC path is the product boot; the SD path is the development boot loop, where
+a verbose console is what you want. So an SD boot of the same image keeps the
+stock kernel command line and stays chatty, while the eMMC boot is quiet.
 
-3. bootdelay is not touched here. It comes from CONFIG_BOOTDELAY through
-   env_default.h, so it is set to 0 in fastboot.cfg instead.
+bootdelay is not touched here. It comes from CONFIG_BOOTDELAY through
+env_default.h, so it is set to 0 in fastboot.cfg instead, and it applies to
+both boot devices.
 
 Upstream-Status: Inappropriate [configuration]
 ---
- include/configs/smarc-rzg3l.h | 6 +++---
- 1 file changed, 3 insertions(+), 3 deletions(-)
+ include/configs/smarc-rzg3l.h | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/include/configs/smarc-rzg3l.h b/include/configs/smarc-rzg3l.h
-index 96384fd..de14dd7 100644
+index 96384fd..0b1c2fe 100644
 --- a/include/configs/smarc-rzg3l.h
 +++ b/include/configs/smarc-rzg3l.h
-@@ -122,14 +122,14 @@
- #define CFG_EXTRA_ENV_SETTINGS \
+@@ -123,13 +123,13 @@
  	"usb_pgood_delay=2000\0" \
  	"bootm_size=0x10000000\0" \
--	"prodsdbootargs=setenv bootargs rw rootwait earlycon root=/dev/mmcblk1p2 \0" \
+ 	"prodsdbootargs=setenv bootargs rw rootwait earlycon root=/dev/mmcblk1p2 \0" \
 -	"prodemmcbootargs=setenv bootargs rw rootwait earlycon root=/dev/mmcblk0p2 \0" \
-+	"prodsdbootargs=setenv bootargs rw rootwait root=/dev/mmcblk1p2 quiet systemd.show_status=false\0" \
 +	"prodemmcbootargs=setenv bootargs rw rootwait root=/dev/mmcblk0p2 quiet systemd.show_status=false\0" \
  	"bootimage=booti 0x48080000 - 0x48000000 \0" \
  	"emmcload=ext4load mmc 0:2 0x48080000 boot/Image;ext4load mmc 0:2 0x48000000 boot/r9a08g046l48-smarc.dtb;run prodemmcbootargs \0" \
