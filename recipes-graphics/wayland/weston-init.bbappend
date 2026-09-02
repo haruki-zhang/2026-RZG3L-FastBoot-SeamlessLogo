@@ -3,53 +3,60 @@
 # After= line, which serialises the compositor behind the whole multi-user
 # chain (network, connman, avahi, ...). Undo that.
 #
-# Phase 2b: run the compositor directly instead of inside a login session.
+# ---------------------------------------------------------------------------
+# Phase 2b (run the compositor outside a login session) has been REMOVED
+# ---------------------------------------------------------------------------
 #
-# Stock weston.service runs weston as User=weston with
-# PAMName=weston-autologin. pam_systemd then asks logind to create a session,
-# and logind brings up a complete per-user service manager for uid 998.
-# Measured on the EVK by lining up `systemd-analyze blame`, `systemd-analyze
-# plot` and the dmesg audit records (times are kernel-relative):
+# This bbappend used to also strip User=, Group=, PAMName= and the
+# systemd-user-sessions.service dependency, so that the compositor ran as root
+# with no logind session. That saved 2118 ms of the 2658 ms weston.service
+# spends starting - and it broke suspend to RAM outright.
 #
-#   4.069s  systemd forks the weston executor, PAM starts
-#   4.325s  user@998.service starts
-#   6.153s  user@998.service ready                   (blame: 1.827s)
-#   6.187s  loginuid set, PAM session established    (audit, comm="(weston)")
-#   6.727s  weston active -> graphical.target
+# Without a logind session weston falls back to its launcher-direct backend,
+# which takes the VT over itself: KDSETMODE(KD_GRAPHICS) plus
+# VT_SETMODE(VT_PROCESS) on the tty systemd hands it through TTYPath=/dev/tty7.
+# From then on weston is the process the kernel has to hand-shake with before
+# any VT switch can complete, and it never answers the release signal.
 #
-# 2118 ms of the 2658 ms weston.service spends starting is session setup. The
-# compositor itself only needs 540 ms.
+# pm_prepare_console() moves the console to SUSPEND_CONSOLE before a single
+# task is frozen, so "echo mem > /sys/power/state" ends up in
 #
-# What is safe to remove and why:
+#   __vt_event_wait <- vt_waitactive <- vt_move_to_console
+#                   <- pm_prepare_console <- pm_suspend <- state_store
 #
-#   User= / Group= / PAMName=  The session is the only reason uid 998 needs a
-#       login at all. Dropping PAMName removes the logind session and with it
-#       user@998.service and user-runtime-dir@998.service.
+# and stays there. Observed on the EVK: the compositor stays on screen, the
+# module board keeps AWO and ALL_ON lit with DDR_RET dark, SLEEP_BTN does
+# nothing because ATF is never entered and the GreenPAK is never told to cut
+# the rails, and only a power cycle recovers. SysRq over a serial break still
+# answers, which is how the stack above was captured.
 #
-#   Requires= / After=systemd-user-sessions.service  That unit exists to gate
-#       logins. With no login there is nothing to gate, and weston still gets
-#       After=basic.target from DefaultDependencies.
+# With the session restored the VT is owned by systemd-logind, which answers
+# the release hand-shake, the switch completes and the suspend proceeds. That
+# is also the configuration the stock rz-vlp image uses, and the one suspend
+# to RAM is known to work in on this board.
 #
-# What must NOT change:
+# Two things that look like they should fix this instead, and do not:
 #
-#   weston.socket keeps SocketUser=weston / SocketGroup=wayland and keeps
-#       listening on /run/wayland-0. weston inherits the descriptor, so the
-#       socket path and its ownership are identical to before, and
-#       /etc/profile.d/weston-socket.sh keeps pointing clients at that absolute
-#       path. Nothing ever referenced /run/user/998.
+#   * Voting the VT switch away by re-enabling DRM_FBDEV_EMULATION, so that
+#     register_framebuffer() calls pm_vt_switch_required(dev, false). It does
+#     silence pm_prepare_console(), but only while console suspend is enabled,
+#     and fbdev emulation destroys the meta-rzg3l-fast-logo boot logo:
+#     drm_fb_helper_hotplug_event() calls drm_fb_helper_set_par() on every
+#     connector hotplug event after the initial config, which commits the
+#     all-black fbdev framebuffer over the picture. Tried on hardware, the
+#     logo survived a few hundred milliseconds. Do not go back to it.
 #
-#   The weston user and its input/video/render group memberships stay in place;
-#       weston.socket still needs the user to exist.
+#   * Leaving console suspend alone. pm_vt_switch() discards every vote when
+#     console suspend is off, so the switch - and with it the deadlock - comes
+#     back the moment anyone runs
+#     "echo 0 > /sys/module/printk/parameters/console_suspend" or boots with
+#     no_console_suspend. Only fixing the VT owner covers that case.
 #
-# weston does still want XDG_RUNTIME_DIR, which used to come from
-# user-runtime-dir@998. RuntimeDirectory= gives it a private /run/weston with
-# mode 0700, created before ExecStart and removed when the service stops.
-#
-# Trade-off: the compositor now runs as root and uses weston's launcher-direct
-# backend rather than the logind one. The capability actually lost is VT
-# switching, which has no user on this board. Revert this hunk if a product
-# cannot accept a root compositor - steps VII.1 and VII.2 are independent of
-# it. See README VII.3.
+# Cost of this revert: weston.service is back to ~2.66 s and the boot time
+# regresses by roughly 2.1 s. VII.1 and VII.2 are independent and still apply.
+# If that 2.1 s has to come back, the direction is to keep the session but stop
+# weston from having to arbitrate VT switches at all - not to re-enable fbdev
+# emulation. See README VII.3.
 #
 # This is a no-op for images that do not install Weston.
 do_install:append() {
@@ -61,34 +68,15 @@ do_install:append() {
     # Phase 2
     sed -i -e 's/ multi-user\.target//g' "$unit"
 
-    # Phase 2b. Assert first: if weston-init stops shipping what we strip, the
-    # session plumbing would come back silently and cost 2.1 s again.
+    # Assert that the login session this layer relies on is still there. It is
+    # what makes systemd-logind, rather than weston itself, the owner of the
+    # VT, and suspend to RAM deadlocks in pm_prepare_console() without it.
     for expected in \
             '^User=weston$' \
             '^Group=weston$' \
-            '^PAMName=weston-autologin$' \
-            '^Requires=systemd-user-sessions\.service$' \
-            '^After=systemd-user-sessions\.service$' \
-            '^\[Install\]$' ; do
+            '^PAMName=weston-autologin$' ; do
         if ! grep -q "$expected" "$unit"; then
-            bbfatal "weston.service no longer matches '$expected'; re-check the phase-2b fast-boot changes in ${THISDIR}"
+            bbfatal "weston.service no longer has '$expected'; weston would fall back to launcher-direct and take the VT over, which deadlocks suspend to RAM. Re-check ${THISDIR}"
         fi
     done
-
-    sed -i \
-        -e '/^User=weston$/d' \
-        -e '/^Group=weston$/d' \
-        -e '/^PAMName=weston-autologin$/d' \
-        -e '/^Requires=systemd-user-sessions\.service$/d' \
-        -e '/^After=systemd-user-sessions\.service$/d' \
-        -e '/^# Make sure we are started after logins are permitted\.$/d' \
-        -e '/^# The user to run Weston as\.$/d' \
-        -e '/^# Set up a full user session for the user, required by Weston\.$/d' \
-        -e '/^\[Install\]$/i # meta-rzg3l-fast-boot-base: replaces the XDG_RUNTIME_DIR that' \
-        -e '/^\[Install\]$/i # user-runtime-dir@998.service used to provide.' \
-        -e '/^\[Install\]$/i Environment=XDG_RUNTIME_DIR=/run/weston' \
-        -e '/^\[Install\]$/i RuntimeDirectory=weston' \
-        -e '/^\[Install\]$/i RuntimeDirectoryMode=0700' \
-        -e '/^\[Install\]$/i \\' \
-        "$unit"
 }

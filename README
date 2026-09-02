@@ -59,8 +59,8 @@ I. What this layer changes
       random seed so sysinit.target stops waiting for the CRNG (VII.2)
     - systemd-conf_%.bbappend keeps journald in RAM and stops serial forwarding
     - weston-init.bbappend lets Weston start in parallel with multi-user.target
-      and runs the compositor directly instead of inside a logind session,
-      which removes user@998.service from the critical path (VII.3)
+      (running the compositor outside a logind session used to be part of this
+      too; it was withdrawn because it deadlocks suspend to RAM - VII.3)
 
 
 II. Required layers
@@ -222,13 +222,14 @@ The microSD controller stays enabled for the development boot loop. A fixed
 eMMC product can disable it after manufacturing and recovery requirements are
 settled.
 
-Phase 2b adds two constraints:
+Phase 2b adds one constraint:
 
-  - Weston runs as root, without a logind session. VT switching is gone. See
-    VII.3 for how to revert just this if a product needs a non-root compositor.
   - systemd's resolved, networkd, timesyncd and userdbd are masked. Adding any
     network function back means un-masking them together with the DT node and
     the DISTRO_FEATURES entry.
+
+It used to add a second one - Weston as root with no logind session - which has
+been withdrawn. See VII.3.
 
 
 VII. Phase 2b: the boot critical path
@@ -259,6 +260,10 @@ VII.1 to VII.3 remove one segment each. Because the segments are serial the
 estimates add: roughly -1.1 s, -0.6 s and -2.1 s, so graphical.target should
 land near 2.9 s. Those are projections from the baseline plot, not measured
 results - re-measure per VII.4 and correct this table.
+
+VII.3 has since been withdrawn because it deadlocks suspend to RAM, so its
+-2.1 s is no longer available and the target is near 5.0 s instead. The rest of
+this section keeps the original analysis; read VII.3 for what replaced it.
 
 `systemd-analyze plot` uses a kernel-relative x axis; `critical-chain` prints
 userspace-relative `@` times. The two differ by exactly the 553 ms kernel
@@ -359,33 +364,72 @@ logind brings up a complete per-user service manager for uid 998. Lining up
 
 2118 ms of the 2658 ms is session setup. The compositor itself needs 540 ms.
 
-weston-init.bbappend therefore drops User=, Group=, PAMName= and the
-systemd-user-sessions.service dependency, so the compositor runs directly with
-no logind session and no user manager.
+weston-init.bbappend therefore used to drop User=, Group=, PAMName= and the
+systemd-user-sessions.service dependency, so that the compositor ran directly
+with no logind session and no user manager.
 
-The Wayland socket is unaffected: weston.socket keeps SocketUser=weston and
-keeps listening on /run/wayland-0, weston inherits the descriptor, and
-/etc/profile.d/weston-socket.sh keeps pointing clients at that absolute path.
-Nothing ever referenced /run/user/998. The weston user and its input/video/
-render group memberships stay in place because weston.socket still needs the
-user to exist. weston does still want XDG_RUNTIME_DIR, so the bbappend gives
-it a private /run/weston through RuntimeDirectory=.
+*** WITHDRAWN: this step deadlocks suspend to RAM. ***
 
-systemd-logind.service is deliberately *not* masked: the serial console login
-still goes through pam_systemd, and logind is off the critical path anyway
-(2.841s .. 3.137s, in parallel).
+The claim above that "the capability actually lost is VT switching, which has
+no user on this board" was wrong. VT switching has one user: the PM core.
 
-This is the one step in phase 2b with a trade-off rather than a pure removal.
-The compositor now runs as root and uses weston's launcher-direct backend
-instead of the logind backend; the capability actually lost is VT switching,
-which has no user on this board. If a product cannot accept a root compositor,
-revert this bbappend hunk - VII.1 and VII.2 are independent of it. The failure
-mode if the assumption is wrong is loud (weston does not start,
-graphical.target times out), never silent.
+Without a logind session weston falls back to its launcher-direct backend and
+takes the VT over itself - KDSETMODE(KD_GRAPHICS) and VT_SETMODE(VT_PROCESS)
+on the tty systemd hands it through TTYPath=/dev/tty7. It then becomes the
+process change_console() has to hand-shake with, via the release signal, before
+any VT switch can complete, and it never answers.
 
-The bbappend asserts that every line it strips is present and calls bbfatal if
-not, so a weston-init update cannot quietly reintroduce the login session and
-the 2.1 s with it.
+pm_prepare_console() moves the console to SUSPEND_CONSOLE before a single task
+is frozen, so on this image "echo mem > /sys/power/state" never even reaches
+the freezer:
+
+  PM: suspend entry (deep)
+  Filesystems sync: 0.008 seconds
+  <nothing - no "Freezing user space processes">
+
+SysRq over a serial break still answers and shows the writer parked in
+
+  __vt_event_wait <- vt_waitactive <- vt_move_to_console
+                  <- pm_prepare_console <- pm_suspend <- state_store
+
+On the bench that looks like: compositor still on screen, module board with AWO
+and ALL_ON lit and DDR_RET dark, SLEEP_BTN dead - ATF is never entered, so the
+GreenPAK is never told to cut the rails - and only a power cycle recovers. Note
+how little of this points at the compositor; the whole failure was originally
+mistaken for "the fast-boot image does not support S2R".
+
+So the hunk is gone and weston runs in its logind session again, which is what
+the stock rz-vlp image does and the configuration S2R is known to work in on
+this board. weston.socket, the weston user and its group memberships were never
+touched by any of this and are unchanged. systemd-logind.service was already
+deliberately not masked (the serial console login goes through pam_systemd) and
+is off the critical path anyway (2.841s .. 3.137s, in parallel).
+
+The bbappend now asserts the opposite of what it used to: it calls bbfatal if
+User=, Group= or PAMName= is missing, so a weston-init update cannot silently
+reintroduce launcher-direct and the deadlock with it.
+
+Two alternatives were considered and rejected:
+
+  - Re-enable DRM_FBDEV_EMULATION so that register_framebuffer() casts the
+    pm_vt_switch_required(dev, false) vote and pm_prepare_console() returns
+    early. It does fix the deadlock, but it destroys the meta-rzg3l-fast-logo
+    boot logo: drm_fb_helper_hotplug_event() calls drm_fb_helper_set_par() on
+    every connector hotplug event after the initial config, committing the
+    all-black fbdev framebuffer over the picture. Tried on hardware; the logo
+    lasted a few hundred milliseconds. It also only works while console suspend
+    is enabled, because pm_vt_switch() discards every vote when it is not.
+
+  - Lock VT switching from userspace with the VT_LOCKSWITCH ioctl, which makes
+    set_console() fail and pm_prepare_console() give up cleanly regardless of
+    console suspend. This keeps the 2.1 s, but it needs a new helper binary in
+    the image and it races weston's own VT_ACTIVATE/VT_WAITACTIVE at start-up -
+    VT_ACTIVATE ignores the set_console() error, so locking too early hangs the
+    compositor instead of the suspend. Viable, but not without hardware time.
+
+Getting the 2.1 s back means keeping the session and stopping weston from
+having to arbitrate VT switches, or fixing weston's launcher-direct so it
+answers the release signal. It does not mean re-enabling fbdev emulation.
 
 
 VII.4 Re-measuring
