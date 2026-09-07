@@ -7,14 +7,15 @@
 #   ext4load mmc 0:2 0x48000000 boot/boot_img_720p.bin.gz
 #   unzip    0x48000000 0x58000000
 #
-# so the images have to sit in /boot on the rootfs partition, under exactly
-# these names. Partition 1 of the BSP image layout is vfat and ext4load cannot
-# read it; partition 2 is also where the BSP environment keeps Image and the
-# device tree, so U-Boot only ever mounts one filesystem.
+# so the images must sit in /boot on the rootfs partition under exactly these
+# names. Partition 1 of the BSP layout is vfat and ext4load cannot read it;
+# partition 2 is also where the BSP environment keeps Image and the device
+# tree, so U-Boot only ever mounts one filesystem.
 #
 # Payload format: raw ARGB8888 frame buffer, gzip compressed.
 #   boot_img_720p.bin.gz    1280x720x4  = 3686400 bytes uncompressed
 #   boot_img_1080p.bin.gz   1920x1080x4 = 8294400 bytes uncompressed
+#
 # The uncompressed size must match, byte for byte, the resolution selected by
 # DISPLAY_MODE in drivers/video/rzg2l/rzg2l_video.c - the driver gunzips
 # straight into the reserved frame buffer and never checks the geometry.
@@ -30,8 +31,8 @@ HOMEPAGE = "https://github.com/renesas-rz"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-# unpack=0 matters: the fetcher gunzips a .gz in SRC_URI during do_unpack, and
-# U-Boot wants the compressed file - it runs "unzip" on it itself.
+# unpack=0 matters: the fetcher would gunzip a .gz in SRC_URI during do_unpack,
+# and U-Boot wants the compressed file - it runs "unzip" on it itself.
 SRC_URI = " \
 	file://boot_img_720p.bin.gz;unpack=0 \
 	file://boot_img_1080p.bin.gz;unpack=0 \
@@ -44,8 +45,8 @@ INHIBIT_DEFAULT_DEPS = "1"
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
 
-# The artwork is tied to the display configuration of this machine, not just to
-# its architecture.
+# The artwork is tied to this machine's display configuration, not just to its
+# architecture.
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 RZG3L_BOOT_LOGO_DIR ?= "/boot"

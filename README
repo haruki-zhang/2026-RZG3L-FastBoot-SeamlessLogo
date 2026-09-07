@@ -1,14 +1,14 @@
 meta-rzg3l-fast-logo
 ====================
 
-Seamless boot logo for the RZ/G3L SMARC EVK: U-Boot brings the MIPI DSI ->
+Seamless boot logo for the RZ/G3L SMARC EVK. U-Boot brings the MIPI DSI ->
 ADV7535 -> HDMI pipeline up and scans out a splash image, and the kernel
 inherits that running pipeline instead of re-creating it, so the picture stays
-on the screen from a few hundred milliseconds after reset until the compositor
+on screen from a few hundred milliseconds after reset until the compositor
 draws its first frame.
 
-Designed to be stacked on meta-rzg3l-fast-boot-base, but it does not depend on
-it: this layer is graphics only, that one is everything else.
+Graphics only. It stacks cleanly on meta-rzg3l-fast-boot-base but does not
+depend on it.
 
 
 I. What this layer changes
@@ -39,8 +39,8 @@ I. What this layer changes
     0006  rzg2l_mipi_dsi: inherit a link left streaming by the bootloader
     0007  adv7511: keep an HDMI output configured by the bootloader
     0008  adv7511: pin the connector to the bootloader's mode
-    0009  adv7511: stop the ten second KMS connector poll from re-powering
-          the encoder with an empty mode and taking the HDMI output down
+    0009  adv7511: stop the ten second KMS connector poll from re-powering the
+          encoder with an empty mode and taking the HDMI output down
     fast-logo.cfg  drop fbdev emulation, fbcon and the kernel logo, so the
           first DRM commit is the compositor's and not an all-black fbdev one
 
@@ -67,6 +67,21 @@ A standard RZ/G3L VLP project:
 Tested with Yocto scarthgap, RZ/G3L BSP v1.0.0, u-boot 2024.07 and
 linux-renesas 6.12.46-cip8, MACHINE = "smarc-rzg3l".
 
+  Stacking with meta-rzg3l-fast-boot-base
+  ---------------------------------------
+  The two layers are independent. This one touches only the display path; that
+  one touches everything except the display path. Both patch
+  r9a08g046l48-smarc.dts, but in disjoint places, and both are cut against the
+  BSP version above.
+
+  Put meta-rzg3l-fast-boot-base first in bblayers.conf. Both layers are
+  priority 20, so the order in which their kernel patches are applied follows
+  bblayers.conf, and that is the order the combination was tested in.
+
+  This layer deliberately does not disable anything outside the display path.
+  If you want the peripheral and kernel-subsystem pruning as well, add
+  meta-rzg3l-fast-boot-base; do not copy its config fragment in here.
+
 
 III. Build
 ==========
@@ -75,13 +90,11 @@ III. Build
   $ bitbake-layers add-layer ../meta-rzg3l-fast-logo
   $ bitbake core-image-weston
 
-No DISTRO setting is required - everything this layer does comes from bbappends
-and one recipe, so it works with rz-vlp, with rz-vlp-fast from
-meta-rzg3l-fast-boot-base, or with any other distro.
-
-conf/layer.conf adds rzg3l-boot-logo to IMAGE_INSTALL so that a plain
-add-layer is enough. Set RZG3L_BOOT_LOGO_PACKAGE = "" in local.conf to build an
-image without the payload.
+No DISTRO setting is required - everything comes from bbappends and one recipe,
+so it works with rz-vlp, with rz-vlp-fast from meta-rzg3l-fast-boot-base, or
+with any other distro. conf/layer.conf adds rzg3l-boot-logo to IMAGE_INSTALL so
+that a plain add-layer is enough; set RZG3L_BOOT_LOGO_PACKAGE = "" in local.conf
+to build an image without the payload.
 
 Check that the pieces landed:
 
@@ -101,9 +114,9 @@ this layer's U-Boot patches you must re-flash bl2 and fip to the boot medium
 (Flash Writer over SCIF, or the eMMC boot-partition procedure in the RZ/G3L
 Linux Start-up Guide).
 
-The U-Boot version string is derived from SOURCE_DATE_EPOCH, so an old and a
-new build print exactly the same banner. Compare the size or timestamp of
-fip.bin instead, or look for these lines on the console:
+The U-Boot version string is derived from SOURCE_DATE_EPOCH, so an old and a new
+build print exactly the same banner. Compare the size or timestamp of fip.bin
+instead, or look for these lines on the console:
 
   62697 bytes read in ... ms
   Uncompressed size: 3686400 = 0x384000
@@ -114,9 +127,9 @@ fip.bin instead, or look for these lines on the console:
 V. Changing the resolution
 ==========================
 
-DISPLAY_MODE in drivers/video/rzg2l/rzg2l_video.c (patch 0002) selects both the
-timings and which image file is loaded. It must stay in sync with the CEA VIC
-pinned on the ADV7535 node by kernel patch 0008:
+DISPLAY_MODE in drivers/video/rzg2l/rzg2l_video.c (U-Boot patch 0002) selects
+both the timings and which image file is loaded. It must stay in sync with the
+CEA VIC pinned on the ADV7535 node by kernel patch 0008:
 
   MIPI_DSI_720P   ->  renesas,seamless-boot-logo-vic = <4>
   MIPI_DSI_1080P  ->  renesas,seamless-boot-logo-vic = <16>
@@ -124,11 +137,9 @@ pinned on the ADV7535 node by kernel patch 0008:
 If they disagree the kernel pins the connector to one mode while the hardware
 scans out another.
 
-The payload is a raw ARGB8888 frame buffer, gzip compressed. Its uncompressed
-size must be exactly width * height * 4; the driver gunzips straight into the
-reserved frame buffer and never checks the geometry. To ship your own artwork,
-bbappend rzg3l-boot-logo from your own layer with FILESEXTRAPATHS:prepend and
-drop in files of the same names.
+The payload is a raw ARGB8888 frame buffer, gzip compressed, and its
+uncompressed size must be exactly width * height * 4 - the driver gunzips
+straight into the reserved frame buffer and never checks the geometry.
 
 
 VI. Known limitations
@@ -137,18 +148,22 @@ VI. Known limitations
   - The hand-over is declared statically in the device tree. If U-Boot does not
     actually leave the pipeline running - an old fip.bin, a different boot
     medium - the kernel still skips its own modeset and the display stays dark.
-    Patch 0003 keeps the LCDC running even when the image fails to load, which
-    covers the common case, but a runtime check in the kernel drivers, or
+    U-Boot patch 0003 keeps the LCDC running even when the image fails to load,
+    which covers the common case, but a runtime check in the kernel drivers, or
     having U-Boot add the DT property only on success, would be more robust.
 
   - Because kernel patch 0002 removes the ADV7535 interrupt and patch 0008
     drops DRM_BRIDGE_OP_HPD, drm_bridge_connector_init() puts the connector on
-    the 10 second KMS poll. The poll itself is harmless since patch 0009, but
-    it still runs; a connector that is pinned to one mode has nothing to poll
-    for. Taking it off the poll would need either a way for the bridge to set
-    connector->polled, or for rzg2l_du_encoder.c to clear it after
-    drm_bridge_connector_init().
+    the ten second KMS poll. The poll is harmless since patch 0009, but a
+    connector pinned to one mode has nothing to poll for. Taking it off would
+    need a way for the bridge to set connector->polled, or for
+    rzg2l_du_encoder.c to clear it after drm_bridge_connector_init().
 
   - The BSP default environment has loadaddr=0x58000000, which is the splash
     frame buffer. Any manual "ext4load mmc 0:2 - <file>" or "tftp <file>" in
-    U-Boot will overwrite the picture. Pass an explicit address.
+    U-Boot overwrites the picture. Pass an explicit address.
+
+  - The 128 MiB no-map reservation at 0x58000000 stays for the lifetime of the
+    system, even after the kernel has taken the pipeline over. Shrinking it to
+    the frame buffer plus the display lists would need the reservation to
+    describe the two ranges separately.
