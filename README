@@ -1,72 +1,59 @@
 meta-rzg3l-fast-boot-base
-==========================
+=========================
 
-This layer contains the graphics-stack-independent RZ/G3L fast-boot work:
+Graphics-stack-independent fast-boot work for the RZ/G3L SMARC EVK.
 
   Phase 0   U-Boot environment: no boot delay, no environment reset, quiet
             kernel command line.
-  Phase 1   Device-tree pruning and Linux kernel configuration trimming.
+  Phase 1   Device-tree pruning and kernel configuration trimming.
   Phase 2   Rootfs slimming and systemd startup-order optimisation.
-  Phase 2b  Removal of the three remaining blocks on the boot critical path,
-            each one located with systemd-analyze rather than guessed at.
+  Phase 2b  Removal of the remaining blocks on the boot critical path, each
+            located with systemd-analyze rather than guessed at.
 
-It intentionally keeps the BSP's Weston graphics stack. Build
-`core-image-weston` with the `rz-vlp-fast` distro to reproduce the baseline.
-The separate `meta-rzg3l-fast-boot-qt-eglfs` layer adds phase 3 and replaces
-Weston with Qt6/EGLFS.
+It keeps the BSP's Weston graphics stack. Build core-image-weston with the
+rz-vlp-fast distro to reproduce the baseline.
 
-The U-Boot environment settings are compiled into the bootloader defaults by
-this layer, so no manual setenv session is needed on a freshly flashed board.
-Section V covers the one case that still needs a command: a board that already
-carries a saved environment.
-
-Phase 2b is documented in section VII, including how each figure was measured
-and what to re-measure after a change. docs/fast-boot-method.md generalises the
-method behind it - the measurement discipline, the cost taxonomy and the three
-patterns - for reuse on other boards and images.
+docs/fast-boot-method.md generalises the method behind phase 2b - the
+measurement discipline, the cost taxonomy and the three patterns - for reuse on
+other boards.
 
 
 I. What this layer changes
 ==========================
 
   U-Boot (recipes-bsp/u-boot/)
-    - fastboot.cfg sets CONFIG_BOOTDELAY=0, so autoboot has no countdown
-    - the patch drops "env default -a" from bootcmd, which otherwise reset the
-      whole environment on every boot, and rewrites prodemmcbootargs to a quiet
-      kernel command line without earlycon. prodsdbootargs is left at the BSP
-      default, so only the eMMC product path goes quiet
-    - the bbappend then asserts the compiled-in default environment really
-      contains those values (section V)
-
-  Distro (conf/distro/rz-vlp-fast.conf)
-    - derives from rz-vlp and pins linux-renesas 6.12
-    - removes unused DISTRO_FEATURES and MACHINE_FEATURES
-    - removes the RZ/VLP development and benchmark package groups
-    - disables autostart for services whose features were removed
-    - fixes SERIAL_CONSOLES to use ttySC3
+    fastboot.cfg sets CONFIG_BOOTDELAY=0. The patch drops "env default -a" from
+    bootcmd, which otherwise reset the whole environment on every boot, and
+    rewrites prodemmcbootargs to a quiet command line without earlycon.
+    prodsdbootargs keeps the BSP default, so only the eMMC product path goes
+    quiet. The bbappend then asserts the compiled-in defaults really contain
+    those values (section IV).
 
   Kernel (recipes-kernel/linux/)
-    - the DT patch disables unused network, USB, PCIe, CAN, camera, audio,
-      extra UART, RTC and related peripheral nodes
-    - fastboot.cfg removes unused kernel subsystems and drivers while keeping
-      the display, boot storage and thermal-protection paths
-    - fastboot.cfg also drops CONFIG_LEGACY_PTYS and the wireless subsystem,
-      which exist only as device units for udev and systemd to walk (VII.1)
+    The DT patch collects the unused nodes - network, USB, PCIe, CAN, camera,
+    audio, extra UARTs, RTC - into rzg3l-smarc-fastboot.dtsi and includes it at
+    the end of the board .dts. fastboot.cfg removes the matching kernel
+    subsystems, drops CONFIG_LEGACY_PTYS and the wireless subsystem (VI.1), and
+    asserts positively that the display, boot storage and thermal paths survive.
+
+  Distro (conf/distro/rz-vlp-fast.conf)
+    Derives from rz-vlp, pins linux-renesas 6.12, removes unused
+    DISTRO_FEATURES / MACHINE_FEATURES and the RZ/VLP development and benchmark
+    package groups, disables autostart for the corresponding services, and
+    fixes SERIAL_CONSOLES to ttySC3.
 
   Userspace
-    - fastboot-systemd-tweaks.bbclass masks vconsole setup, the invalid ttyS0
-      getty and systemd's network/identity services, and credits the saved
-      random seed so sysinit.target stops waiting for the CRNG (VII.2)
-    - systemd-conf_%.bbappend keeps journald in RAM and stops serial forwarding
-    - weston-init.bbappend lets Weston start in parallel with multi-user.target
-      (running the compositor outside a logind session used to be part of this
-      too; it was withdrawn because it deadlocks suspend to RAM - VII.3)
+    fastboot-systemd-tweaks.bbclass masks vconsole setup, the invalid ttyS0
+    getty and systemd's network/identity services, and credits the saved random
+    seed so sysinit.target stops waiting for the CRNG (VI.2).
+    systemd-conf_%.bbappend keeps journald in RAM and stops serial forwarding.
+    weston-init.bbappend lets Weston start in parallel with multi-user.target.
 
 
 II. Required layers
 ===================
 
-Use a standard RZ/G3L VLP project with at least:
+A standard RZ/G3L VLP project:
 
   poky/meta
   poky/meta-poky
@@ -85,12 +72,23 @@ Use a standard RZ/G3L VLP project with at least:
 This layer has priority 20 and must follow the Renesas BSP, distro and graphics
 layers in bblayers.conf.
 
-Tested with Yocto scarthgap, RZ/G3L BSP v1.0.0-rc1 and linux-renesas
-6.12.46-cip8.
+Tested with Yocto scarthgap, RZ/G3L BSP v1.0.0, u-boot 2024.07 and
+linux-renesas 6.12.46-cip8, MACHINE = "smarc-rzg3l".
+
+  Stacking with meta-rzg3l-fast-logo
+  ----------------------------------
+  The two layers are independent and can be used in either order or on their
+  own. This one never touches the display path; that one never touches anything
+  else. Both patch r9a08g046l48-smarc.dts, but in disjoint places, and both are
+  cut against the BSP version above.
+
+  Put meta-rzg3l-fast-boot-base first in bblayers.conf. Both layers are
+  priority 20, so the order in which their kernel patches are applied follows
+  bblayers.conf, and that is the order the combination was tested in.
 
 
-III. Build the phase-2 Weston baseline
-======================================
+III. Build
+==========
 
   $ source poky/oe-init-build-env build
   $ bitbake-layers add-layer ../meta-rzg3l-fast-boot-base
@@ -100,11 +98,15 @@ Set in conf/local.conf:
   MACHINE = "smarc-rzg3l"
   DISTRO  = "rz-vlp-fast"
 
-Then build:
+Then:
 
   $ bitbake core-image-weston
 
-Useful metadata checks:
+Note that adding the layer alone already applies phases 0 and 1 - they come
+from bbappends. Phases 2 and 2b need DISTRO = "rz-vlp-fast", which is what
+pulls in fastboot-systemd-tweaks.
+
+Metadata checks:
 
   $ bitbake-layers show-layers
   $ bitbake-layers show-appends
@@ -114,32 +116,11 @@ Useful metadata checks:
         tmp/deploy/images/smarc-rzg3l/u-boot-initial-env-smarc-rzg3l
 
 
-IV. Add the Qt/EGLFS phase
-==========================
+IV. U-Boot environment
+======================
 
-Do not copy the base files into another layer. Add the overlay after this layer:
-
-  meta-qt6
-  meta-rz-qt6
-  meta-rzg3l-fast-boot-base
-  meta-rzg3l-fast-boot-qt-eglfs
-
-Then select:
-
-  DISTRO = "rz-vlp-fast-qt-eglfs"
-
-and build:
-
-  $ bitbake core-image-hmi
-
-
-V. U-Boot environment
-=====================
-
-Phase 0 is compiled into the bootloader by recipes-bsp/u-boot/, so there is
-nothing to type on a freshly flashed board. `bitbake u-boot` produces this
-default environment - the full text is deployed as u-boot-initial-env-<machine>
-in tmp/deploy/images/smarc-rzg3l:
+Phase 0 is compiled into the bootloader, so there is nothing to type on a
+freshly flashed board. `bitbake u-boot` produces:
 
   bootdelay=0
   bootcmd=run bootcmd_check;run bootimage
@@ -147,46 +128,31 @@ in tmp/deploy/images/smarc-rzg3l:
 
 Against the stock BSP that is three changes:
 
-  bootdelay          2 -> 0. No countdown before autoboot. A keypress on the
-                     serial console still interrupts it.
+  bootdelay          2 -> 0. A keypress on the serial console still interrupts
+                     autoboot.
 
-  bootcmd            loses the leading "env default -a". The stock value reset
-                     the entire environment on every boot, one command before
-                     using it, which both discarded any saved tuning and made
-                     the environment effectively read-only.
+  bootcmd            loses the leading "env default -a", which reset the whole
+                     environment one command before using it - discarding any
+                     saved tuning and making the environment read-only in
+                     practice.
 
   prodemmcbootargs   loses "earlycon" and gains "quiet
-                     systemd.show_status=false". earlycon replays the kernel
-                     ring buffer synchronously over the 115200-baud UART and
-                     keeps every later printk at that speed; quiet raises the
-                     console loglevel and show_status stops the per-unit
-                     systemd lines. Nothing is lost from the kernel log or the
-                     journal, only from the serial output. Re-add earlycon when
-                     debugging a failure that happens before the real console
-                     is registered.
+                     systemd.show_status=false". earlycon replays the ring
+                     buffer synchronously over the 115200-baud UART and keeps
+                     every later printk at that speed. Nothing is lost from the
+                     kernel log or the journal, only from the serial output.
+                     Re-add earlycon when debugging a failure that happens
+                     before the real console is registered.
 
-prodsdbootargs stays at the BSP default, earlycon and all. eMMC is the product
-boot path and is the one made quiet; SD is the development boot loop (see
-section VI), where a verbose console is worth more than the milliseconds.
-bootcmd_check picks between the two, so the same image boots quiet from eMMC
-and chatty from SD.
-
-The other two changes are not device-specific: bootdelay and bootcmd apply
-whichever loader bootcmd_check ends up running.
-
-These settings live in the bootloader, not in the rootfs, so the board only
-picks them up once the newly built fip has been written to it - through the
-wic image on SD (the .wks places fip at FIP_WIC_OFFSET) or through the flash
-writer for eMMC/QSPI. Reflashing only the rootfs leaves the old bootloader,
-and with it the old two-second delay.
+These live in the bootloader, not the rootfs, so the board only picks them up
+once the newly built fip has been written to it. Reflashing only the rootfs
+leaves the old bootloader and the old two-second delay.
 
   Boards that already have a saved environment
-  -------------------------------------------
-  The values above are the compiled-in *defaults*. U-Boot uses them only while
-  the environment area in eMMC is empty or fails its CRC check. A board that
-  has had `saveenv` run on it - for example one that was tuned by hand before
-  this layer existed - keeps its stored copy and ignores the new defaults.
-  Switch such a board over once, after flashing the new fip:
+  --------------------------------------------
+  The values above are the compiled-in *defaults*, used only while the
+  environment area is empty or fails its CRC. A board that has had `saveenv`
+  run on it keeps its stored copy. Switch it over once, after flashing:
 
     => env default -a
     => saveenv
@@ -194,124 +160,93 @@ and with it the old two-second delay.
 
   Verify with `env print bootdelay bootcmd prodemmcbootargs`.
 
-  How the settings are implemented
-  --------------------------------
-  bootdelay is a Kconfig symbol, so it is set in a defconfig fragment
-  (recipes-bsp/u-boot/u-boot/fastboot.cfg). bootcmd and prodemmcbootargs come
-  from CONFIG_BOOTCOMMAND and CFG_EXTRA_ENV_SETTINGS in
-  include/configs/smarc-rzg3l.h, which Kconfig cannot reach, so they are
-  patched (0001-configs-smarc-rzg3l-fast-boot-default-environment.patch).
-
-  Either mechanism can fail silently on a BSP update - a fragment entry can be
-  reverted by a "select" elsewhere, and a patch can still apply around a moved
-  default. The bbappend therefore re-reads u-boot-initial-env after do_compile
-  and calls bbfatal if any of the three entries above is missing, so the board
-  can never quietly go back to a two-second delay and an earlycon console.
-  prodsdbootargs is not checked: this layer does not set it, and asserting a
-  BSP value we do not own would fail the build over an unrelated change.
+Either mechanism can fail silently on a BSP update, so the bbappend re-reads
+u-boot-initial-env after do_compile and calls bbfatal if any of the three
+entries is missing.
 
 
-VI. Product constraints
-=======================
+V. Product constraints
+======================
 
 The DT profile disables Ethernet, USB, PCIe, CAN, camera, audio, i2c0/i2c1/
-i2c3, extra UARTs and RTC. Restore both the DT nodes and their matching kernel
-and userspace features before adding any of those product functions.
+i2c3, extra UARTs and RTC. Restore both the DT node and its matching kernel and
+userspace features before adding any of those product functions.
 
-The microSD controller stays enabled for the development boot loop. A fixed
-eMMC product can disable it after manufacturing and recovery requirements are
-settled.
+i2c2 stays enabled - it carries the ADV7535 HDMI bridge. adc1 stays enabled -
+it is the TSU thermal-protection input. The microSD controller stays enabled
+for the development boot loop; a fixed eMMC product can disable it once
+manufacturing and recovery requirements are settled.
 
-Phase 2b adds one constraint:
-
-  - systemd's resolved, networkd, timesyncd and userdbd are masked. Adding any
-    network function back means un-masking them together with the DT node and
-    the DISTRO_FEATURES entry.
-
-It used to add a second one - Weston as root with no logind session - which has
-been withdrawn. See VII.3.
+systemd's resolved, networkd, timesyncd and userdbd are masked. Adding any
+network function back means un-masking them together with the DT node and the
+DISTRO_FEATURES entry.
 
 
-VII. Phase 2b: the boot critical path
-=====================================
+VI. Phase 2b: the boot critical path
+====================================
 
 Phase 2 left userspace at roughly 75% of the boot. `systemd-analyze plot`
-showed why: the path from systemd to graphical.target is not a broad parallel
-fan-out with some slow services in it, it is six strictly serial segments.
-Because they are serial, the savings from removing them add up.
+showed why: the path to graphical.target is not a broad parallel fan-out, it is
+six strictly serial segments. Because they are serial, the savings add.
 
 Baseline (RZ/G3L EVK, phase 2 + meta-rzg3l-fast-logo, eMMC boot):
 
-  systemd-analyze -> 553ms (kernel) + 6.284s (userspace) = 6.837s
-                     graphical.target reached after 6.176s in userspace
+  553 ms kernel + 6.284 s userspace = 6.837 s
 
   segment                                    kernel-rel     cost
   ---------------------------------------------------------------
   kernel -> systemd runnable                 0     .. 0.553   553 ms
-  systemd start-up + sysinit.target          0.553 .. 2.757  2204 ms   VII.2
-  basic.target / sockets / user-sessions      2.757 .. 2.883   126 ms
-  512 legacy PTY device units                2.883 .. 3.997  1114 ms   VII.1
+  systemd start-up + sysinit.target          0.553 .. 2.757  2204 ms   VI.2
+  basic.target / sockets / user-sessions     2.757 .. 2.883   126 ms
+  512 legacy PTY device units                2.883 .. 3.997  1114 ms   VI.1
   getty.target / multi-user.target           3.997 .. 4.069    72 ms
-  weston.service                             4.069 .. 6.727  2658 ms   VII.3
+  weston.service                             4.069 .. 6.727  2658 ms   VI.3
   ---------------------------------------------------------------
   graphical.target                                   6.729
 
-VII.1 to VII.3 remove one segment each. Because the segments are serial the
-estimates add: roughly -1.1 s, -0.6 s and -2.1 s, so graphical.target should
-land near 2.9 s. Those are projections from the baseline plot, not measured
-results - re-measure per VII.4 and correct this table.
-
-VII.3 has since been withdrawn because it deadlocks suspend to RAM, so its
--2.1 s is no longer available and the target is near 5.0 s instead. The rest of
-this section keeps the original analysis; read VII.3 for what replaced it.
+VI.1 and VI.2 remove one segment each, roughly -1.1 s and -0.6 s, so
+graphical.target should land near 5.0 s. Those are projections from the
+baseline plot, not measured results - re-measure per VI.4 and correct this
+table.
 
 `systemd-analyze plot` uses a kernel-relative x axis; `critical-chain` prints
 userspace-relative `@` times. The two differ by exactly the 553 ms kernel
-phase. All figures in this section are kernel-relative, so they line up with
-dmesg timestamps.
+phase. All figures here are kernel-relative, so they line up with dmesg.
 
 Do not use the serial `login:` prompt as the metric. serial-getty is Type=idle,
 so it deliberately waits for the job queue to drain - in the baseline it prints
-at 7.897s, 1.2 s after the boot has actually finished.
+at 7.897 s, 1.2 s after the boot has actually finished.
 
 
-VII.1 512 legacy PTY device units - 1114 ms
--------------------------------------------
+VI.1 512 legacy PTY device units - 1114 ms
+------------------------------------------
 
-CONFIG_LEGACY_PTYS creates 256 BSD-style pty pairs. udev emits an event per
-device and systemd instantiates two device units for each, so the boot
-transaction carries 512 units that nothing will ever open - 81% of every unit
-in the plot. systemd walks them serially, and that walk lands squarely between
-systemd-user-sessions.service finishing (2.980s) and multi-user.target /
-weston.service being allowed to start (4.055s / 4.069s).
+CONFIG_LEGACY_PTYS creates 256 pty pairs. udev emits an event per device and
+systemd instantiates two device units for each, so the boot transaction carries
+512 units that nothing will ever open - 81% of every unit in the plot. systemd
+walks them serially, and that walk lands between systemd-user-sessions
+finishing (2.980 s) and weston being allowed to start (4.069 s). The same
+events are also most of the work in systemd-udev-trigger.service (1.049 s) and
+the reason dev-mmcblk0p2.device does not settle until 2.757 s.
 
-The same 512 udev events are also most of the work in
-systemd-udev-trigger.service (1.049s), and the reason dev-mmcblk0p2.device
-does not settle until 2.757s.
+Fixed in fastboot.cfg. CONFIG_UNIX98_PTYS is asserted positively in the same
+fragment so a defconfig change can never leave the board with no pty support.
 
-Fixed in fastboot.cfg by dropping CONFIG_LEGACY_PTYS. CONFIG_UNIX98_PTYS
-(/dev/ptmx) is asserted positively in the same fragment so a defconfig change
-can never leave the board with no pty support at all.
+The Image does not get smaller - legacy ptys are a few KB of code. The win is
+unit count, not size.
 
-Note the Image does not get smaller: legacy ptys are only a few KB of code.
-The win here is unit count, not size.
-
-The wireless subsystem goes at the same time: rz-vlp-fast already removes wifi
-and bluetooth from DISTRO_FEATURES, but the kernel still built cfg80211/mac80211
-in - visible in the boot log as the regulatory.db load failing - and rfkill
-added two more device units. CONFIG_WLAN has to be the one disabled;
-drivers/net/wireless/Kconfig does "select WIRELESS" and WLAN is default y, so
-turning off WIRELESS alone is silently reverted by kconfig. Always verify a
-negative fragment entry against the generated .config (VII.4) rather than
-assuming it took.
+The wireless subsystem goes at the same time. CONFIG_WLAN has to be the symbol
+disabled: drivers/net/wireless/Kconfig does "select WIRELESS" and WLAN is
+default y, so turning off WIRELESS alone is silently reverted by kconfig.
+Always verify a negative fragment entry against the generated .config (VI.4).
 
 
-VII.2 sysinit.target - 2204 ms
-------------------------------
+VI.2 sysinit.target - 2204 ms
+-----------------------------
 
-`critical-chain` names systemd-resolved.service as the last link before
-sysinit.target, but the plot shows four services finishing within 110 ms of
-each other, all of them gating the same target:
+`critical-chain` names systemd-resolved as the last link, but the plot shows
+four services finishing within 110 ms of each other, all gating the same
+target:
 
   systemd-timesyncd      1.886 .. 2.556   669 ms
   systemd-random-seed    1.623 .. 2.622   998 ms   <- crng init done @2.590
@@ -319,125 +254,82 @@ each other, all of them gating the same target:
   systemd-networkd       1.926 .. 2.665   739 ms
   sysinit.target                 2.757
 
-So both causes have to be dealt with in the same step; removing either one
-alone just promotes the other to be the new gate.
+Both causes have to go in the same step; removing either one alone just
+promotes the other to be the new gate.
 
   Network and identity services. The DT profile has no Ethernet, so networkd,
-  resolved, timesyncd, userdbd and network-generator have nothing to do -
-  2.51 service-seconds of pure waste, and resolved is on the chain. They ship
-  inside the systemd recipe, so SYSTEMD_AUTO_ENABLE cannot reach them; they are
-  masked in the rootfs instead. See FASTBOOT_MASKED_UNITS.
+  resolved, timesyncd, userdbd and network-generator have nothing to do. They
+  ship inside the systemd recipe, so SYSTEMD_AUTO_ENABLE cannot reach them;
+  they are masked in the rootfs instead. See FASTBOOT_MASKED_UNITS.
 
-  Entropy. systemd-random-seed is not slow, it is blocked: after writing the
-  saved seed to /dev/urandom it generates a fresh one to write back, and that
-  blocks in getrandom() until the CRNG initialises. Crediting the seed
-  initialises the CRNG immediately, so the second half stops blocking. The
-  class comment records why crediting is safe on this image and what the
-  first-boot-after-flash caveat is.
+  Entropy. systemd-random-seed is blocked, not slow: after writing the saved
+  seed it generates a fresh one, and that blocks in getrandom() until the CRNG
+  initialises. Crediting the seed initialises it on the spot. The bbclass
+  records why crediting is safe here and what the first-boot caveat is.
 
-  There is no kernel option for the first-boot-after-flash case. 6.12 removed
-  CONFIG_RANDOM_TRUST_BOOTLOADER; drivers/char/random.c now defines
-  "trust_bootloader __initdata = true" and only random.trust_bootloader= on the
-  command line turns it off, so the kernel already credits a bootloader seed.
-  The outstanding work is entirely on the U-Boot side - publishing
-  /chosen/rng-seed. fastboot.cfg does drop CONFIG_RANDOMIZE_BASE, which the
-  boot log shows was never taking effect anyway.
-
-Step VII.1 helps here as well: dev-mmcblk0p2.device settles at 2.757s, exactly
-when sysinit.target completes, because udev's queue is clogged with the 512
-pty events.
+VI.1 helps here too: dev-mmcblk0p2.device settles at 2.757 s, exactly when
+sysinit.target completes, because udev's queue is clogged with the pty events.
 
 
-VII.3 weston.service - 2658 ms
-------------------------------
+VI.3 weston.service - 2658 ms (withdrawn)
+-----------------------------------------
 
 Stock weston.service runs the compositor as User=weston with
-PAMName=weston-autologin. pam_systemd asks logind to create a session, and
-logind brings up a complete per-user service manager for uid 998. Lining up
-`blame`, the plot and the dmesg audit records:
+PAMName=weston-autologin. pam_systemd asks logind for a session and logind
+brings up a complete per-user service manager for uid 998:
 
   4.069s  systemd forks the weston executor, PAM starts
-  4.325s  user@998.service starts
-  6.153s  user@998.service ready                    (blame: 1.827s)
-  6.187s  loginuid set, PAM session established     (audit, comm="(weston)")
+  6.153s  user@998.service ready
   6.727s  weston active -> graphical.target
 
-2118 ms of the 2658 ms is session setup. The compositor itself needs 540 ms.
+2118 ms of the 2658 ms is session setup; the compositor itself needs 540 ms.
 
 weston-init.bbappend therefore used to drop User=, Group=, PAMName= and the
-systemd-user-sessions.service dependency, so that the compositor ran directly
-with no logind session and no user manager.
+systemd-user-sessions dependency.
 
-*** WITHDRAWN: this step deadlocks suspend to RAM. ***
-
-The claim above that "the capability actually lost is VT switching, which has
-no user on this board" was wrong. VT switching has one user: the PM core.
+*** WITHDRAWN: this deadlocks suspend to RAM. ***
 
 Without a logind session weston falls back to its launcher-direct backend and
-takes the VT over itself - KDSETMODE(KD_GRAPHICS) and VT_SETMODE(VT_PROCESS)
-on the tty systemd hands it through TTYPath=/dev/tty7. It then becomes the
-process change_console() has to hand-shake with, via the release signal, before
-any VT switch can complete, and it never answers.
-
-pm_prepare_console() moves the console to SUSPEND_CONSOLE before a single task
-is frozen, so on this image "echo mem > /sys/power/state" never even reaches
-the freezer:
-
-  PM: suspend entry (deep)
-  Filesystems sync: 0.008 seconds
-  <nothing - no "Freezing user space processes">
-
-SysRq over a serial break still answers and shows the writer parked in
+takes the VT over itself - KDSETMODE(KD_GRAPHICS) and VT_SETMODE(VT_PROCESS) on
+the tty systemd hands it through TTYPath=/dev/tty7. It then becomes the process
+change_console() must hand-shake with before any VT switch can complete, and it
+never answers. pm_prepare_console() moves the console to SUSPEND_CONSOLE before
+a single task is frozen, so "echo mem > /sys/power/state" never reaches the
+freezer:
 
   __vt_event_wait <- vt_waitactive <- vt_move_to_console
                   <- pm_prepare_console <- pm_suspend <- state_store
 
-On the bench that looks like: compositor still on screen, module board with AWO
-and ALL_ON lit and DDR_RET dark, SLEEP_BTN dead - ATF is never entered, so the
-GreenPAK is never told to cut the rails - and only a power cycle recovers. Note
-how little of this points at the compositor; the whole failure was originally
-mistaken for "the fast-boot image does not support S2R".
+On the bench: compositor still on screen, AWO and ALL_ON lit with DDR_RET dark,
+SLEEP_BTN dead because ATF is never entered, and only a power cycle recovers.
 
-So the hunk is gone and weston runs in its logind session again, which is what
-the stock rz-vlp image does and the configuration S2R is known to work in on
-this board. weston.socket, the weston user and its group memberships were never
-touched by any of this and are unchanged. systemd-logind.service was already
-deliberately not masked (the serial console login goes through pam_systemd) and
-is off the critical path anyway (2.841s .. 3.137s, in parallel).
-
-The bbappend now asserts the opposite of what it used to: it calls bbfatal if
-User=, Group= or PAMName= is missing, so a weston-init update cannot silently
-reintroduce launcher-direct and the deadlock with it.
+So the hunk is gone and weston runs in its logind session again, which is the
+configuration S2R is known to work in on this board. The bbappend now asserts
+the opposite of what it used to: bbfatal if User=, Group= or PAMName= is
+missing.
 
 Two alternatives were considered and rejected:
 
-  - Re-enable DRM_FBDEV_EMULATION so that register_framebuffer() casts the
-    pm_vt_switch_required(dev, false) vote and pm_prepare_console() returns
-    early. It does fix the deadlock, but it destroys the meta-rzg3l-fast-logo
-    boot logo: drm_fb_helper_hotplug_event() calls drm_fb_helper_set_par() on
-    every connector hotplug event after the initial config, committing the
-    all-black fbdev framebuffer over the picture. Tried on hardware; the logo
-    lasted a few hundred milliseconds. It also only works while console suspend
-    is enabled, because pm_vt_switch() discards every vote when it is not.
+  - Re-enable DRM_FBDEV_EMULATION so register_framebuffer() casts the
+    pm_vt_switch_required(dev, false) vote. It fixes the deadlock but destroys
+    the meta-rzg3l-fast-logo boot logo: drm_fb_helper_hotplug_event() calls
+    set_par() on every connector hotplug event, committing the all-black fbdev
+    framebuffer over the picture. Tried on hardware; the logo lasted a few
+    hundred milliseconds. It also only works while console suspend is enabled.
 
-  - Lock VT switching from userspace with the VT_LOCKSWITCH ioctl, which makes
-    set_console() fail and pm_prepare_console() give up cleanly regardless of
-    console suspend. This keeps the 2.1 s, but it needs a new helper binary in
-    the image and it races weston's own VT_ACTIVATE/VT_WAITACTIVE at start-up -
-    VT_ACTIVATE ignores the set_console() error, so locking too early hangs the
-    compositor instead of the suspend. Viable, but not without hardware time.
+  - Lock VT switching with VT_LOCKSWITCH. This keeps the 2.1 s but needs a new
+    helper binary and races weston's own VT_ACTIVATE at start-up. Viable, but
+    not without hardware time.
 
 Getting the 2.1 s back means keeping the session and stopping weston from
-having to arbitrate VT switches, or fixing weston's launcher-direct so it
-answers the release signal. It does not mean re-enabling fbdev emulation.
+having to arbitrate VT switches. It does not mean re-enabling fbdev emulation.
 
 
-VII.4 Re-measuring
-------------------
+VI.4 Re-measuring
+-----------------
 
 Check the kernel side on the build host first - a negative fragment entry can
-be silently reverted by a "select" from another symbol, or name a symbol that
-no longer exists:
+be silently reverted by a "select", or name a symbol that no longer exists:
 
   $ bitbake -c kernel_configcheck -f linux-renesas
   $ C=$(find tmp/work/*/linux-renesas/*/linux-*-build -name .config)
@@ -451,8 +343,8 @@ Then on the target:
   systemd-analyze plot > /boot.svg
 
 Read the numbers from `systemd-analyze`, not from the serial log. Take ten
-boots and record the P95: systemd-random-seed.service blocks for a variable
-time (VII.2), so a single best-case boot is not representative.
+boots and record the P95: systemd-random-seed blocks for a variable time, so a
+single best-case boot is not representative.
 
 When measuring anything that logs at info level, remember that
 systemd-conf_%.bbappend sets MaxLevelStore=warning - raise it to info for the
