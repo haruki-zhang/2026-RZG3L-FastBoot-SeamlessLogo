@@ -20,6 +20,8 @@ Also drop the ADV7535 interrupt.  Hotplug is pointless once the connector
 is pinned to the single mode U-Boot programmed and always reports
 connected, and an HPD event would only schedule re-probes that poke a
 bridge the hand-over deliberately leaves alone.
+
+Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
 ---
  .../boot/dts/renesas/r9a08g046l48-smarc.dts   | 24 ++++++++++++++++++-
  1 file changed, 23 insertions(+), 1 deletion(-)

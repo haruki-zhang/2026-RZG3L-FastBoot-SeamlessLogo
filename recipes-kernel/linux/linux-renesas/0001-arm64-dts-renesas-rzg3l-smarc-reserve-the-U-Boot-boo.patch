@@ -18,6 +18,8 @@ the linear mapping - it can then neither be allocated nor reached through
 a cacheable alias - and move the CMA pool to 0x70000000, which is free
 DRAM below the top of the 2 GiB fitted on the SoM.  CMA keeps its 256 MiB
 size, so GPU/VPU workloads are unaffected.
+
+Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
 ---
  .../boot/dts/renesas/r9a08g046l48-smarc.dts   | 23 +++++++++++++++++--
  1 file changed, 21 insertions(+), 2 deletions(-)
