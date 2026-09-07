@@ -30,6 +30,8 @@ writes into DU_DITR0..4 and the ADV7535 timing generator.
 Unlike the hand-over flag this is not one-shot: the pinning stays in
 effect for the lifetime of the system, since a later mode change would be
 just as wrong as one during boot.
+
+Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
 ---
  .../boot/dts/renesas/r9a08g046l48-smarc.dts   |  2 +
  drivers/gpu/drm/bridge/adv7511/adv7511.h      |  8 +++
@@ -40,7 +42,7 @@ diff --git a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts b/arch/arm64/boo
 index eea3d7254458..6747b1687731 100644
 --- a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
 +++ b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
-@@ -638,6 +638,8 @@ adv7535: hdmi@3d {
+@@ -637,6 +637,8 @@ adv7535: hdmi@3d {
  		reg-names = "main", "cec", "edid", "packet";
  
  		renesas,seamless-boot-logo;
