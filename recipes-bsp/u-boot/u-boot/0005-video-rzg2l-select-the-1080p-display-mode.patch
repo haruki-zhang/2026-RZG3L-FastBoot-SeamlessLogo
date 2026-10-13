@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meta-rzg3l-fast-anime-logo <fastboot@example.com>
+Date: Tue, 9 Sep 2026 10:00:00 +0900
+Subject: [PATCH 5/5] video: rzg2l: select the 1080p display mode
+
+The driver defaults to MIPI_DSI_720P.  This layer's boot animation is
+1920x1080, so the bootloader has to bring the pipeline up at 1080p or the
+hand-over cannot be seamless: the kernel pins the HDMI connector to the
+single CEA VIC the bootloader programmed, and the player then looks for a
+mode matching its artwork.  At 720p the player would find no usable mode
+and skip the animation, leaving the static splash on screen until weston.
+
+DISPLAY_MODE also selects which file rzg2l_video_init() loads, so this one
+line moves the load to boot/boot_img_1080p.bin.gz, which is where
+rzg3l-anime-logo-assets installs the animation's first frame.
+
+1920x1080@60 is exactly the ADV7535's ceiling and passes both of the
+driver's limits rather than exceeding them: adv7533_mode_valid() checks
+mode->clock against max_mode_clock_khz (148500 == 148500) and
+mode->clock * 24 against max_lane_freq_khz * 4 (3564000 == 3564000).
+
+define_1080p.h carries 2200x1125 total at 148.5 MHz with positive syncs,
+which is CEA VIC 16 value for value, so the mode the kernel advertises and
+the mode the hardware is scanning out are the same mode.
+
+Upstream-Status: Inappropriate [RZ/G3L boot animation, board specific]
+---
+ drivers/video/rzg2l/rzg2l_video.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/video/rzg2l/rzg2l_video.c
++++ b/drivers/video/rzg2l/rzg2l_video.c
+@@ -32,7 +32,15 @@
+ #define	LVDS_720P		2
+ #define PARALLEL_RGB_720P	3
+
+-#define	DISPLAY_MODE MIPI_DSI_720P
++/*
++ * 1080p, to match the 1920x1080 boot animation this layer ships and the
++ * CEA VIC 16 the kernel pins the connector to.  These three have to agree:
++ * U-Boot programs the hardware from define_1080p.h, the kernel advertises
++ * exactly one mode and refuses everything else, and the player selects the
++ * mode that matches its artwork.  Changing one without the other two gets
++ * you a connector pinned to a mode the hardware is not scanning out.
++ */
++#define	DISPLAY_MODE MIPI_DSI_1080P
+
+ #if (DISPLAY_MODE == MIPI_DSI_1080P)
+ #include "define_1080p.h"

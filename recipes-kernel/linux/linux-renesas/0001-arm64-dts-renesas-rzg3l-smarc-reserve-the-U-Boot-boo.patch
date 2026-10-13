@@ -1,0 +1,63 @@
+From 3bf37980bcba278ee37b649c11bfb025140851db Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Wed, 5 Aug 2026 11:51:11 +0900
+Subject: [PATCH] arm64: dts: renesas: rzg3l-smarc: reserve the U-Boot boot
+ logo memory
+
+When the seamless boot logo is enabled, U-Boot leaves VSPD scanning out
+an ARGB8888 1280x720 frame buffer at 0x58000000 and following a chain of
+self-looping display lists at 0x5f000000/0x5f800000.  VSPD is a bus
+master: it keeps fetching that memory on its own for the whole of kernel
+boot, with no CPU involvement.
+
+Today the default CMA pool covers exactly that range (0x58000000, 256
+MiB), so the picture is destroyed as soon as anything allocates from CMA.
+
+Reserve 0x58000000..0x5fffffff as "no-map" so the range is excluded from
+the linear mapping - it can then neither be allocated nor reached through
+a cacheable alias - and move the CMA pool to 0x70000000, which is free
+DRAM below the top of the 2 GiB fitted on the SoM.  CMA keeps its 256 MiB
+size, so GPU/VPU workloads are unaffected.
+
+Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
+---
+ .../boot/dts/renesas/r9a08g046l48-smarc.dts   | 23 +++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+index 7fbce3357545..2f46686cada1 100644
+--- a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
++++ b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+@@ -152,11 +152,30 @@ reserved-memory {
+ 		#size-cells = <2>;
+ 		ranges;
+ 
+-		global_cma: linux,cma@58000000 {
++		/*
++		 * Memory the LCDC is still scanning out when Linux is entered,
++		 * placed there by the U-Boot seamless boot logo driver:
++		 *
++		 *   0x58000000..0x58383fff  ARGB8888 1280x720 frame buffer
++		 *   0x5f000000/0x5f100000/0x5f200000  VSPD display list headers
++		 *   0x5f800000/0x5f900000/0x5fa00000  VSPD display list bodies
++		 *
++		 * VSPD keeps fetching from here as a bus master for the whole
++		 * of kernel boot, so the range must never be handed out or
++		 * written through a cacheable alias. "no-map" excludes it from
++		 * the linear mapping, which achieves both.
++		 */
++		uboot_logo_reserved: framebuffer@58000000 {
++			no-map;
++			reg = <0x0 0x58000000 0x0 0x08000000>;
++		};
++
++		/* Moved out of 0x58000000 to make room for the above. */
++		global_cma: linux,cma@70000000 {
+ 			compatible = "shared-dma-pool";
+ 			linux,cma-default;
+ 			reusable;
+-			reg = <0x0 0x58000000 0x0 0x10000000>;
++			reg = <0x0 0x70000000 0x0 0x10000000>;
+ 		};
+ 
+ 		mmp_reserved: linux,multimedia {

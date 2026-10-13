@@ -1,0 +1,62 @@
+From 6bbed30dcf1b9e14c75c67773602391c329c28cc Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Wed, 30 Sep 2026 11:57:22 +0900
+Subject: [PATCH] drm/bridge: adv7511: accept the pinned mode without its
+ aspect ratio
+
+With "renesas,seamless-boot-logo-vic" set, adv7511_bridge_mode_valid()
+rejects every mode that is not drm_mode_equal() to the CEA mode the
+connector is pinned to.  drm_mode_equal() also compares the picture
+aspect ratio, and that breaks every plain DRM/KMS client:
+
+  - the CEA table gives VIC 16 a 16:9 aspect ratio;
+  - a client that has not set DRM_CLIENT_CAP_ASPECT_RATIO receives the
+    mode from GETCONNECTOR with the DRM_MODE_FLAG_PIC_AR_* bits cleared;
+  - handing it back through SETCRTC, drm_mode_convert_umode() turns the
+    missing bits into HDMI_PICTURE_ASPECT_NONE;
+  - drm_atomic_helper_check_modeset() calls the bridge's mode_valid,
+    the modes no longer compare equal, and the modeset fails with
+    -EINVAL ("[BRIDGE] mode_valid() failed").
+
+Weston sets the capability, which is why this went unnoticed; a boot
+logo application written against libdrm in the usual way - or modetest -
+does not, and never gets a picture up.  Seen on the RZ/G3L EVK.
+
+The aspect ratio is metadata for the AVI InfoFrame, not something the
+hardware scans out.  Compare timings, clock, flags and 3D flags, which
+is everything the pinning is there to protect.  Aspect-ratio-aware
+clients still receive the mode as 16:9 from get_modes().
+
+Upstream-Status: Inappropriate [RZ/G3L boot logo, board specific]
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ drivers/gpu/drm/bridge/adv7511/adv7511_drv.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
+index 76f24b2..216febc 100644
+--- a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
++++ b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
+@@ -1043,7 +1043,20 @@ static enum drm_mode_status adv7511_bridge_mode_valid(struct drm_bridge *bridge,
+ 		if (!pinned)
+ 			return MODE_ERROR;
+ 
+-		match = drm_mode_equal(pinned, mode);
++		/*
++		 * Compare what the hardware scans out - timings, clock and
++		 * flags - and not the picture aspect ratio.  The CEA mode
++		 * carries 16:9, but a client that has not asked for
++		 * DRM_CLIENT_CAP_ASPECT_RATIO gets the mode with the aspect
++		 * ratio stripped and hands it back as "none".  With
++		 * drm_mode_equal() that is a different mode, and every plain
++		 * DRM/KMS program's first modeset fails with -EINVAL.
++		 */
++		match = drm_mode_match(pinned, mode,
++				       DRM_MODE_MATCH_TIMINGS |
++				       DRM_MODE_MATCH_CLOCK |
++				       DRM_MODE_MATCH_FLAGS |
++				       DRM_MODE_MATCH_3D_FLAGS);
+ 		drm_mode_destroy(bridge->dev, pinned);
+ 
+ 		if (!match)
