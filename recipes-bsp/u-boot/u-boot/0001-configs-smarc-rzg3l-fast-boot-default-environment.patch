@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: meta-rzg3l-fast-boot-base <fastboot@example.com>
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Subject: [PATCH] configs: smarc-rzg3l: fast-boot default environment
 
 Bake the fast-boot U-Boot environment into the built-in defaults so the
