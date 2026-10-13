@@ -2,7 +2,7 @@
 #
 # Build with the BSP's SDK:
 #
-#   $ source /opt/poky/<version>/environment-setup-cortexa55-poky-linux
+#   $ source /opt/rz-vlp/<version>/environment-setup-cortexa55-poky-linux
 #   $ make
 #
 # The SDK environment provides CC (with --sysroot), CFLAGS, LDFLAGS and a
