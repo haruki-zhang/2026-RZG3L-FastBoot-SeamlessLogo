@@ -1,0 +1,35 @@
+# Boot logo sample application, "hold" variant: show the images, then keep the
+# last one on screen until the compositor replaces it.
+#
+#   DefaultDependencies=no, WantedBy=sysinit.target
+#       Start as early as possible. Wants= creates no ordering, so
+#       sysinit.target does not wait for the images to finish.
+#   After=local-fs.target
+#       The application and its images live on the root filesystem.
+#   Type=notify, NotifyAccess=main, Before=weston.service
+#       Only one program can be DRM master, and only the master may set
+#       modes. The program reports readiness after the last image, once it
+#       has dropped DRM master, so weston waits for that instead of racing
+#       it. The program itself keeps running until weston has committed.
+#       run-app.sh must exec the program, so that it is the main process.
+#   TimeoutStartSec
+#       Bounds how long weston can be held back if the program hangs before
+#       reporting readiness.
+
+[Unit]
+Description=Boot logo sample application (hold)
+DefaultDependencies=no
+After=local-fs.target
+Before=weston.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/home/root/run-app.sh
+TimeoutStartSec=60
+TimeoutStopSec=5
+
+[Install]
+WantedBy=sysinit.target
