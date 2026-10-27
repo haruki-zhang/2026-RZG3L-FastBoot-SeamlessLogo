@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: meta-rzg3l-fast-anime-logo <fastboot@example.com>
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Date: Tue, 9 Sep 2026 15:00:00 +0900
 Subject: [PATCH 7/7] video: rzg2l: find the intro on whichever medium the
  board booted from
@@ -13,7 +13,7 @@ microSD the same image gets:
   Failed to load 'boot/boot_img_1080p_00.bin.gz'
   fast-logo: no splash image, showing a blank screen
 
-and the screen stays black until the userspace player takes over - on a
+and the screen stays black until a Linux application takes over - on a
 measured boot, from 1.04 s to 13.22 s.  Note the wording: "Failed to load",
 not "Can't set block device".  The eMMC partition mounted fine, it just holds
 a different image; the frames were on the SD card all along.

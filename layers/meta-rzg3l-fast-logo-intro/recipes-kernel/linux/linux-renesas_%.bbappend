@@ -3,7 +3,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 # Teach every driver on the DRAM -> VSPD -> DU -> MIPI DSI -> ADV7535 -> HDMI
 # path to inherit the pipeline U-Boot left running instead of re-creating it.
 #
-# The series is meta-rzg3l-fast-anime-logo's, with the device tree declaration
+# The series is meta-rzg3l-fast-logo's, with the device tree declaration
 # taken out:
 #
 #   0001       reserve the frame buffers and display lists U-Boot leaves the
@@ -83,7 +83,7 @@ do_configure:prepend:smarc-rzg3l() {
     fi
 
     if grep -q 'renesas,seamless-boot-logo' "$dts"; then
-        bbfatal "the board device tree declares the boot logo hand-over statically. With this layer U-Boot adds it at boot, and only when it has started the pipeline. Remove the static declaration (is meta-rzg3l-fast-logo or meta-rzg3l-fast-anime-logo also in the build?)."
+        bbfatal "the board device tree declares the boot logo hand-over statically. With this layer U-Boot adds it at boot, and only when it has started the pipeline. Remove the static declaration (is meta-rzg3l-fast-logo also in the build?)."
     fi
 }
 

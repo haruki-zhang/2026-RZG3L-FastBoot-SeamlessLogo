@@ -1,5 +1,5 @@
-# Boot logo sample application, "hold" variant: show the images, then keep the
-# last one on screen until the compositor replaces it.
+# Boot logo sample application: show the images, then keep the last one on
+# screen until the compositor replaces it.
 #
 #   DefaultDependencies=no, WantedBy=sysinit.target
 #       Start as early as possible. Wants= creates no ordering, so
@@ -17,7 +17,7 @@
 #       reporting readiness.
 
 [Unit]
-Description=Boot logo sample application (hold)
+Description=Boot logo sample application
 DefaultDependencies=no
 After=local-fs.target
 Before=weston.service

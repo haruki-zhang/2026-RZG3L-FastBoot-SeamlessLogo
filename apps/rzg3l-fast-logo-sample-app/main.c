@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 /*
- * logo_sample_app - boot logo sample application, "exit" variant
+ * logo_sample_app - boot logo sample application
  *
  * Copyright (c) Renesas Electronics Corporation
  *
  * Shows a list of BMP images on the display through DRM/KMS, one after the
- * other at a fixed interval, and exits after the last one.
+ * other at a fixed interval, and keeps the last one on screen until another
+ * program - normally the compositor - replaces it.
  *
  * It is a reference for an application that continues a boot logo in Linux,
  * and deliberately generic: it runs on a stock BSP image as well as on one
@@ -20,13 +21,20 @@
  *   - BMP files may be 24 or 32 bpp, bottom-up or top-down, any width.
  *   - The dumb buffer is written row by row at its own pitch.
  *
- * When the program exits the kernel removes its framebuffer from the display,
- * so the screen goes dark until the next DRM client - normally the
- * compositor - commits.  The "hold" variant avoids that gap.
+ * Holding the last image: exiting would make the kernel take our framebuffer
+ * off the display, leaving the screen dark until the compositor commits.
+ * Instead, after the last image the program drops DRM master - which lets the
+ * compositor become master - but keeps the device open, so the framebuffer
+ * stays on screen.  It then watches the CRTC and exits once something else's
+ * framebuffer is being scanned out; at that point closing the device no
+ * longer touches the display.
  *
  * DRM master: the first process to open the DRM device becomes master, and
- * only the master may set modes.  The unit file therefore orders this program
- * before weston.service, and Type=oneshot holds weston back until it exits.
+ * only the master may set modes.  The unit file orders this program before
+ * weston.service with Type=notify, and the program reports readiness only
+ * once it has dropped master, so weston starts right after the last image
+ * instead of racing the first one.  Every failure path reports readiness
+ * too: a boot logo must never hold the compositor back.
  */
 
 #include <errno.h>
@@ -43,7 +51,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <stddef.h>
+
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -53,6 +65,10 @@
 #define DEFAULT_MODULE		"rzg2l-du"
 #define DEFAULT_INTERVAL_MS	1000u
 #define DEFAULT_DEVICE_WAIT_MS	3000u
+/* Give up holding the last image after this long; 0 means never. */
+#define DEFAULT_HOLD_MAX_MS	60000u
+/* How often to look whether someone else has taken the display over. */
+#define HOLD_POLL_MS		100u
 
 /* Refuse absurd BMP headers before multiplying them together. */
 #define MAX_IMAGE_DIM		8192u
@@ -65,7 +81,7 @@ enum fit {
 struct options {
 	const char *module;
 	unsigned int interval_ms;
-	unsigned int wait_ms;
+	unsigned int hold_max_ms;
 	unsigned int device_wait_ms;
 	unsigned int mode_w, mode_h;	/* 0: choose from the first image */
 	enum fit fit;
@@ -147,6 +163,48 @@ static uint32_t rd32(const uint8_t *p)
 {
 	return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
 	       (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/*
+ * Report readiness to systemd (Type=notify), without linking libsystemd.
+ * Idempotent: it is called from every exit path.
+ */
+static void notify_ready(void)
+{
+	static bool sent;
+	struct sockaddr_un addr = { .sun_family = AF_UNIX };
+	const char *path;
+	socklen_t addrlen;
+	size_t len;
+	int fd;
+
+	if (sent)
+		return;
+	sent = true;
+
+	path = getenv("NOTIFY_SOCKET");
+	if (!path || !*path)
+		return;			/* not started by systemd */
+	len = strlen(path);
+	if (len >= sizeof(addr.sun_path))
+		return;
+
+	memcpy(addr.sun_path, path, len);
+	if (addr.sun_path[0] == '@') {
+		/* Abstract namespace: leading NUL, no trailing NUL. */
+		addr.sun_path[0] = '\0';
+		addrlen = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + len);
+	} else {
+		addrlen = (socklen_t)sizeof(addr);
+	}
+
+	fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (fd < 0)
+		return;
+	if (sendto(fd, "READY=1\n", 8, MSG_NOSIGNAL,
+		   (struct sockaddr *)&addr, addrlen) < 0)
+		logmsg("sd_notify: %s", strerror(errno));
+	close(fd);
 }
 
 /* -------------------------------------------------------------------------
@@ -602,6 +660,33 @@ static int first_frame(struct display *disp, uint32_t fb_id)
 	return page_flip(disp, fb_id);
 }
 
+/*
+ * Wait until the CRTC scans out something other than @fb_id - the compositor
+ * has committed - or @max_ms passes (0: no limit), or a signal asks to stop.
+ * The CRTC can be queried without being DRM master.
+ */
+static void hold_until_replaced(struct display *disp, uint32_t fb_id,
+				unsigned int max_ms)
+{
+	uint64_t deadline = now_ms() + max_ms;
+
+	while (!stop) {
+		drmModeCrtc *crtc = drmModeGetCrtc(disp->fd, disp->crtc_id);
+		uint32_t cur = crtc ? crtc->buffer_id : 0;
+
+		drmModeFreeCrtc(crtc);
+		if (cur != fb_id) {
+			logmsg("display taken over, exiting");
+			return;
+		}
+		if (max_ms && now_ms() >= deadline) {
+			logmsg("nobody took the display over in %u ms, exiting", max_ms);
+			return;
+		}
+		sleep_until(now_ms() + HOLD_POLL_MS);
+	}
+}
+
 /* -------------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------------- */
@@ -611,10 +696,12 @@ static void usage(FILE *fp)
 	fprintf(fp,
 "Usage: " PROGNAME " [options] IMAGE.bmp...\n"
 "\n"
-"Show the images one after the other through DRM/KMS, then exit.\n"
+"Show the images one after the other through DRM/KMS, then keep the last one\n"
+"on screen until another program replaces it.\n"
 "\n"
 "  -i, --interval=MS      time each image stays on screen (default %u)\n"
-"  -w, --wait=MS          keep the last image this much longer (default 0)\n"
+"  -t, --hold-max=MS      stop holding the last image after this long;\n"
+"                         0 holds it until replaced (default %u)\n"
 "  -m, --mode=WxH         use this mode if the display offers it\n"
 "                         (default: the size of the first image)\n"
 "  -f, --fit=center|scale place images that do not match the mode 1:1 and\n"
@@ -622,7 +709,7 @@ static void usage(FILE *fp)
 "  -M, --module=NAME      DRM driver to use (default " DEFAULT_MODULE ")\n"
 "  -d, --device-wait=MS   wait this long for the DRM device (default %u)\n"
 "  -h, --help             show this help\n",
-		DEFAULT_INTERVAL_MS, DEFAULT_DEVICE_WAIT_MS);
+		DEFAULT_INTERVAL_MS, DEFAULT_HOLD_MAX_MS, DEFAULT_DEVICE_WAIT_MS);
 }
 
 static int parse_uint(const char *s, unsigned int *out)
@@ -642,7 +729,7 @@ static int parse_args(int argc, char **argv, struct options *opt)
 {
 	static const struct option longopts[] = {
 		{ "interval",    required_argument, NULL, 'i' },
-		{ "wait",        required_argument, NULL, 'w' },
+		{ "hold-max",    required_argument, NULL, 't' },
 		{ "mode",        required_argument, NULL, 'm' },
 		{ "fit",         required_argument, NULL, 'f' },
 		{ "module",      required_argument, NULL, 'M' },
@@ -652,14 +739,14 @@ static int parse_args(int argc, char **argv, struct options *opt)
 	};
 	int c;
 
-	while ((c = getopt_long(argc, argv, "i:w:m:f:M:d:h", longopts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "i:t:m:f:M:d:h", longopts, NULL)) != -1) {
 		switch (c) {
 		case 'i':
 			if (parse_uint(optarg, &opt->interval_ms))
 				goto bad;
 			break;
-		case 'w':
-			if (parse_uint(optarg, &opt->wait_ms))
+		case 't':
+			if (parse_uint(optarg, &opt->hold_max_ms))
 				goto bad;
 			break;
 		case 'm':
@@ -708,6 +795,7 @@ int main(int argc, char **argv)
 	struct options opt = {
 		.module = DEFAULT_MODULE,
 		.interval_ms = DEFAULT_INTERVAL_MS,
+		.hold_max_ms = DEFAULT_HOLD_MAX_MS,
 		.device_wait_ms = DEFAULT_DEVICE_WAIT_MS,
 		.fit = FIT_CENTER,
 	};
@@ -718,8 +806,10 @@ int main(int argc, char **argv)
 	uint32_t want_w, want_h;
 	int nimages, i, back = 0, ret = 1;
 
-	if (parse_args(argc, argv, &opt))
+	if (parse_args(argc, argv, &opt)) {
+		notify_ready();
 		return 2;
+	}
 	nimages = argc - optind;
 
 	sigemptyset(&sa.sa_mask);
@@ -727,8 +817,10 @@ int main(int argc, char **argv)
 	sigaction(SIGINT, &sa, NULL);
 
 	/* The first image is loaded before the mode is picked: it sets the size. */
-	if (load_bmp(argv[optind], &img))
+	if (load_bmp(argv[optind], &img)) {
+		notify_ready();
 		return 1;
+	}
 	want_w = opt.mode_w ? opt.mode_w : img.width;
 	want_h = opt.mode_h ? opt.mode_h : img.height;
 
@@ -786,15 +878,27 @@ int main(int argc, char **argv)
 		back ^= 1;
 	}
 
-	if (!stop)
-		sleep_until(start + (uint64_t)nimages * opt.interval_ms + opt.wait_ms);
+	/*
+	 * The last image is up (it was drawn into the buffer before the final
+	 * toggle).  Let go of DRM master so the compositor can take it, report
+	 * readiness so systemd starts the compositor, and keep the image on
+	 * screen until it is replaced.
+	 */
+	if (!stop) {
+		if (drmDropMaster(disp.fd))
+			logmsg("drmDropMaster: %s", strerror(errno));
+		notify_ready();
+		hold_until_replaced(&disp, disp.buf[back ^ 1].fb_id, opt.hold_max_ms);
+	}
 	ret = 0;
 
 out:
+	notify_ready();
 	free_image(&img);
 	/*
-	 * Closing the device releases the buffers and takes our framebuffer
-	 * off the display.
+	 * Closing the device releases the buffers.  Once the compositor has
+	 * committed, our framebuffer is no longer on any plane and this does
+	 * not touch the display.
 	 */
 	for (i = 0; i < 2; i++)
 		if (disp.buf[i].map)

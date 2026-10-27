@@ -58,7 +58,7 @@ python () {
     # --- Layers carrying the same U-Boot and kernel series. Together, every
     #     patch would be offered twice and do_patch fails on the second copy.
     collections = (d.getVar('BBFILE_COLLECTIONS') or '').split()
-    for other in ('meta-rzg3l-fast-logo', 'meta-rzg3l-fast-anime-logo'):
+    for other in ('meta-rzg3l-fast-logo',):
         if other in collections:
             bb.fatal("meta-rzg3l-fast-logo-intro and %s cannot be used "
                      "together: both carry the seamless boot logo patch "

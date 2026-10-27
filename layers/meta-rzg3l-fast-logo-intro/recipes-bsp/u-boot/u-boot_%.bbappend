@@ -6,9 +6,8 @@
 #              drivers/video/rzg2l display driver run from init_sequence_r,
 #              the frames loaded from /boot on the rootfs partition, and a
 #              two-frame wait instead of a flat second
-#   0005-0007  imported verbatim from meta-rzg3l-fast-anime-logo: 1080p, the
-#              self-advancing display list chain that plays once and parks,
-#              and run-time detection of the boot medium
+#   0005-0007  1080p, the self-advancing display list chain that plays once
+#              and parks, and run-time detection of the boot medium
 #   0008       the timing table is picked from RZG2L_LOGO_WIDTH/HEIGHT, and
 #              the frame files carry the geometry in their names
 #   0009       play however many frames are installed; frame 0 gets its full

@@ -1,18 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: meta-rzg3l-fast-anime-logo <fastboot@example.com>
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Date: Tue, 9 Sep 2026 10:00:00 +0900
 Subject: [PATCH 5/5] video: rzg2l: select the 1080p display mode
 
-The driver defaults to MIPI_DSI_720P.  This layer's boot animation is
+The driver defaults to MIPI_DSI_720P.  This layer's boot logo artwork is
 1920x1080, so the bootloader has to bring the pipeline up at 1080p or the
 hand-over cannot be seamless: the kernel pins the HDMI connector to the
-single CEA VIC the bootloader programmed, and the player then looks for a
-mode matching its artwork.  At 720p the player would find no usable mode
-and skip the animation, leaving the static splash on screen until weston.
+single CEA VIC the bootloader programmed, and a Linux application then looks
+for a mode matching its artwork.  At 720p a 1080p application would find no
+usable mode.
 
 DISPLAY_MODE also selects which file rzg2l_video_init() loads, so this one
-line moves the load to boot/boot_img_1080p.bin.gz, which is where
-rzg3l-anime-logo-assets installs the animation's first frame.
+line moves the load to boot/boot_img_1080p.bin.gz.
 
 1920x1080@60 is exactly the ADV7535's ceiling and passes both of the
 driver's limits rather than exceeding them: adv7533_mode_valid() checks

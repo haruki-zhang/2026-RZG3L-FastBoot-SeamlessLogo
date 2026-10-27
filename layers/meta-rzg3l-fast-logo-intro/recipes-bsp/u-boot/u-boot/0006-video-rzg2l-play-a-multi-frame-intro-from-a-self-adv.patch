@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: meta-rzg3l-fast-anime-logo <fastboot@example.com>
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Date: Tue, 9 Sep 2026 12:00:00 +0900
 Subject: [PATCH 6/6] video: rzg2l: play a multi-frame intro from a
  self-advancing display list chain
 
 The driver scans out one still image and holds it until Linux takes over.
 On this board that is about six seconds of a static picture - the display
-comes up at ~1.05 s and the userspace player does not run until ~3.6 s even
+comes up at ~1.05 s and the first Linux application does not draw until ~3.6 s
 after the boot has been tuned - so almost all of the "boot animation" the
 user sees is a photograph.
 
@@ -34,7 +34,7 @@ kernel boot today.  All that changes is the number of hops.
 Parking matters more than it looks.  The chain keeps advancing after U-Boot
 is gone, so neither U-Boot nor the kernel can know which frame is on screen
 at an arbitrary later moment.  Ending on a fixed frame removes the question:
-the Linux player takes over from a known frame however long the kernel took.
+a Linux application takes over from a known frame however long the kernel took.
 
 Frame count and rate come from the "logo_frames" and "logo_rate_ms"
 environment variables, so retuning the intro needs neither a rebuild nor a
