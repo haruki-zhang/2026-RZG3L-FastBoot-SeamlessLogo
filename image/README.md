@@ -1,26 +1,38 @@
 # Prebuilt images
 
-> **Placeholder.** Prebuilt images are not included in this release yet.
-
-When provided, this directory will contain the following files for each
-solution. All files are built for `MACHINE = "smarc-rzg3l"`.
+Prebuilt `core-image-weston` images for `MACHINE = "smarc-rzg3l"`, one per
+solution, built from the layers in this package:
 
 ```plaintext
 image/
-├── fast-boot-seamless-logo-still/   # meta-rzg3l-fast-boot + meta-rzg3l-seamless-logo-still (eMMC boot)
+├── fast-boot-seamless-logo-still/   # Solution 1: meta-rzg3l-fast-boot + meta-rzg3l-seamless-logo-still
 │   ├── core-image-weston-smarc-rzg3l.rootfs.wic.gz
-│   ├── core-image-weston-smarc-rzg3l.rootfs.wic.bmap
-│   ├── bl2_bp_mmc-smarc-rzg3l.srec
-│   ├── fip-smarc-rzg3l.srec
-│   └── Flash_Writer_SCIF_RZG3L_SMARC_LPDDR4.mot
+│   └── core-image-weston-smarc-rzg3l.rootfs.wic.bmap
 │
-└── seamless-logo-sequence/          # meta-rzg3l-seamless-logo-sequence
+└── seamless-logo-sequence/          # Solution 2: meta-rzg3l-seamless-logo-sequence
     ├── core-image-weston-smarc-rzg3l.rootfs.wic.gz
-    ├── core-image-weston-smarc-rzg3l.rootfs.wic.bmap
-    ├── bl2_bp_spi-smarc-rzg3l.srec
-    ├── fip-smarc-rzg3l.srec
-    └── Flash_Writer_SCIF_RZG3L_SMARC_LPDDR4.mot
+    └── core-image-weston-smarc-rzg3l.rootfs.wic.bmap
 ```
 
-U-Boot (`bl2`/`fip`) is written with Flash Writer, separately from the WIC
-image. See the main guide in `docs/`.
+Only the WIC image and its block map are provided. For QSPI and eMMC boot,
+the bootloader (`bl2`, `fip`) is written separately with Flash Writer, and
+neither is included here: build them from the same layers (guide, Solution 1
+Step 3 or Solution 2 Step 2) and write them as the guide describes. The logo
+is shown by U-Boot, so with a stock `bl2`/`fip` the board boots these images
+but shows no logo. For eSD boot the WIC image already contains `bl2` and
+`fip`.
+
+| Image | Boot medium | How to write (guide) |
+|---|---|---|
+| `fast-boot-seamless-logo-still` | eMMC only | Solution 1, Step 4 |
+| `seamless-logo-sequence` | microSD or eMMC | Solution 2, Step 3 |
+
+To write a WIC image to a microSD card on the host PC:
+
+```sh
+# replace sdX with the actual microSD card device
+sudo bmaptool copy core-image-weston-smarc-rzg3l.rootfs.wic.gz /dev/sdX
+```
+
+The sample application of Solution 2 is not in the image. Install it as
+described in the guide, Solution 2 Step 4.

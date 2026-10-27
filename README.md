@@ -22,6 +22,6 @@ Layer compatibility:
 | `docs/` | `RZG3L-Fast-Boot-Seamless-Logo-Guide.md` (and `.pdf`) |
 | `layers/` | Yocto layers, each with a `README` |
 | `apps/` | `rzg3l-seamless-logo-sequence-app`, the sample application of Solution 2 |
-| `image/` | Prebuilt images (placeholder) |
+| `image/` | Prebuilt WIC images of Solutions 1 and 2 |
 | `reference/` | RZ/G3L Linux Start-up Guide |
 | `tools/` | `md2pdf.py`: renders the guide as PDF |

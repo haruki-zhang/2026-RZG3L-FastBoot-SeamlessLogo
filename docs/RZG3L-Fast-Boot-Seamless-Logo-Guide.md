@@ -544,8 +544,10 @@ rzg3l-fast-boot-seamless-logo/
 │       ├── prebuilt/logo_sample_app
 │       └── images/w1.bmp … w7.bmp
 │
-├── image/                                         # prebuilt images (placeholder)
-│   └── README.md
+├── image/                                         # prebuilt WIC images
+│   ├── README.md
+│   ├── fast-boot-seamless-logo-still/             # Solution 1: .wic.gz + .wic.bmap
+│   └── seamless-logo-sequence/                    # Solution 2: .wic.gz + .wic.bmap
 ├── reference/                                     # RZ/G3L Linux Start-up Guide
 └── tools/md2pdf.py                                # renders this guide as PDF
 ```
