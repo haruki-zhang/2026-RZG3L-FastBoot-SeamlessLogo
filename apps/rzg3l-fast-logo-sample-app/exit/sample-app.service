@@ -1,0 +1,30 @@
+# Boot logo sample application, "exit" variant: show the images, then exit.
+#
+#   DefaultDependencies=no, WantedBy=sysinit.target
+#       Start as early as possible. Wants= creates no ordering, so
+#       sysinit.target does not wait for the images to finish.
+#   After=local-fs.target
+#       The application and its images live on the root filesystem.
+#   Type=oneshot, Before=weston.service
+#       Only one program can be DRM master, and only the master may set
+#       modes. With Type=oneshot the service counts as started when the
+#       program has exited, so weston waits for it instead of racing it.
+#       Weston thus starts about <number of images> x <interval> later.
+#   TimeoutStartSec
+#       Bounds how long weston can be held back if the program hangs.
+
+[Unit]
+Description=Boot logo sample application (exit)
+DefaultDependencies=no
+After=local-fs.target
+Before=weston.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/root/run-app.sh
+TimeoutStartSec=60
+
+[Install]
+WantedBy=sysinit.target
