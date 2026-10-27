@@ -1,0 +1,187 @@
+From 724f1e2f964823f0913a7918a48989575f93fae9 Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Wed, 5 Aug 2026 11:54:16 +0900
+Subject: [PATCH] media: vsp1: take over a pipeline left running by the
+ bootloader
+
+On RZ/G3L the VSP is what actually holds the U-Boot splash on screen: it
+walks a self-looping display list chain in DRAM and feeds the LCDC without
+any CPU involvement.  Two things in the driver destroy that during boot.
+
+vsp1_probe() runtime-resumes the device to read the version register and
+then puts it again.  The put reaches vsp1_pm_runtime_suspend(), which
+asserts the LCDC reset - shared with the DU and the FCP - while the
+picture is still on the wire.
+
+The first vsp1_du_setup_lif() then resumes the device again, and this time
+vsp1->info is populated so vsp1_pm_runtime_resume() calls
+vsp1_device_init().  That soft-resets WPF0 mid-scanout, sets every DPR
+route to NODE_UNUSED and rewrites VI6_DL_CTRL, i.e. it throws away the
+display list chain the bootloader built.
+
+When the DT node carries "renesas,seamless-boot-logo", hold a runtime PM
+reference from probe until the DRM pipeline is up, and skip the device
+init for as long as that hand-over is pending.  The reference is dropped
+in vsp1_du_setup_lif() right after vsp1_pipeline_run() has committed the
+kernel's own display list - which the hardware latches at the next frame
+boundary, so the switch from splash to compositor content happens without
+the output ever stopping.
+
+Using a real PM reference rather than short-circuiting vsp1_device_get()
+matters on this SoC: the vspd and fcpvd nodes both declare clocks, so
+rzg2l_cpg_attach_dev() builds a pm_clk list for them and an unbalanced
+usage count would eventually gate the display clocks mid-scanout.  Here
+every get keeps its put, so runtime PM, the V4L2 M2M path and
+suspend/resume all keep working as before.
+
+The hand-over is also released on the disable path and on probe failure,
+so the guard cannot survive into a state where it would keep the device
+pinned.
+---
+ drivers/media/platform/renesas/vsp1/vsp1.h    |  9 ++++
+ .../media/platform/renesas/vsp1/vsp1_drm.c    | 15 ++++++
+ .../media/platform/renesas/vsp1/vsp1_drv.c    | 46 ++++++++++++++++++-
+ 3 files changed, 69 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/renesas/vsp1/vsp1.h b/drivers/media/platform/renesas/vsp1/vsp1.h
+index 2f6f0c6ae555..b0f9ab716d32 100644
+--- a/drivers/media/platform/renesas/vsp1/vsp1.h
++++ b/drivers/media/platform/renesas/vsp1/vsp1.h
+@@ -107,10 +107,19 @@ struct vsp1_device {
+ 	struct media_entity_operations media_ops;
+ 
+ 	struct vsp1_drm *drm;
++
++	/*
++	 * Set from the "renesas,seamless-boot-logo" DT property: the
++	 * bootloader left this VSP scanning out a splash image and the first
++	 * DRM pipeline setup has to take it over without stopping it.  Cleared
++	 * by vsp1_finish_boot_logo_handover() once the kernel owns the device.
++	 */
++	bool boot_logo_handover;
+ };
+ 
+ int vsp1_device_get(struct vsp1_device *vsp1);
+ void vsp1_device_put(struct vsp1_device *vsp1);
++void vsp1_finish_boot_logo_handover(struct vsp1_device *vsp1);
+ 
+ int vsp1_reset_wpf(struct vsp1_device *vsp1, unsigned int index);
+ 
+diff --git a/drivers/media/platform/renesas/vsp1/vsp1_drm.c b/drivers/media/platform/renesas/vsp1/vsp1_drm.c
+index b5d1f238f7be..f7b55271be06 100644
+--- a/drivers/media/platform/renesas/vsp1/vsp1_drm.c
++++ b/drivers/media/platform/renesas/vsp1/vsp1_drm.c
+@@ -713,6 +713,14 @@ int vsp1_du_setup_lif(struct device *dev, unsigned int pipe_index,
+ 		mutex_unlock(&vsp1->drm->lock);
+ 
+ 		vsp1_dlm_reset(pipe->output->dlm);
++
++		/*
++		 * The CRTC is going down before the kernel ever took the
++		 * bootloader's pipeline over, so there is nothing left to
++		 * preserve.  Drop the hand-over reference first, so that the
++		 * put below really suspends the device.
++		 */
++		vsp1_finish_boot_logo_handover(vsp1);
+ 		vsp1_device_put(vsp1);
+ 
+ 		dev_dbg(vsp1->dev, "%s: pipeline disabled\n", __func__);
+@@ -774,6 +782,13 @@ int vsp1_du_setup_lif(struct device *dev, unsigned int pipe_index,
+ 	vsp1_pipeline_run(pipe);
+ 	spin_unlock_irqrestore(&pipe->irqlock, flags);
+ 
++	/*
++	 * The kernel's own display list has been committed and will be latched
++	 * at the next frame boundary, so it now owns the VSP.  Give the device
++	 * back to runtime PM.
++	 */
++	vsp1_finish_boot_logo_handover(vsp1);
++
+ 	dev_dbg(vsp1->dev, "%s: pipeline enabled\n", __func__);
+ 
+ 	return 0;
+diff --git a/drivers/media/platform/renesas/vsp1/vsp1_drv.c b/drivers/media/platform/renesas/vsp1/vsp1_drv.c
+index c2f519776969..95dbbed80f4a 100644
+--- a/drivers/media/platform/renesas/vsp1/vsp1_drv.c
++++ b/drivers/media/platform/renesas/vsp1/vsp1_drv.c
+@@ -590,6 +590,22 @@ void vsp1_device_put(struct vsp1_device *vsp1)
+ 	pm_runtime_put_sync(vsp1->dev);
+ }
+ 
++/*
++ * vsp1_finish_boot_logo_handover - Hand the VSP back to runtime PM
++ *
++ * Release the reference taken in vsp1_probe() to keep the bootloader's
++ * pipeline running, and re-arm the normal device initialisation for the next
++ * resume.  Idempotent, and a no-op when no hand-over is in progress.
++ */
++void vsp1_finish_boot_logo_handover(struct vsp1_device *vsp1)
++{
++	if (!vsp1->boot_logo_handover)
++		return;
++
++	vsp1->boot_logo_handover = false;
++	pm_runtime_put(vsp1->dev);
++}
++
+ /* -----------------------------------------------------------------------------
+  * Power Management
+  */
+@@ -645,7 +661,15 @@ static int __maybe_unused vsp1_pm_runtime_resume(struct device *dev)
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	if (vsp1->info) {
++	/*
++	 * Never run the device init while the bootloader's splash is still on
++	 * screen.  It soft-resets WPF0 in the middle of scanout, points every
++	 * DPR route at NODE_UNUSED and rewrites VI6_DL_CTRL - between them
++	 * they tear down the self-looping display list chain that is holding
++	 * the picture up.  vsp1_probe() keeps the device resumed for as long
++	 * as the flag is set, so in practice this is only a safety net.
++	 */
++	if (vsp1->info && !vsp1->boot_logo_handover) {
+ 		/*
+ 		 * On R-Car Gen2 and RZ/G1, vsp1 register access after deassert
+ 		 * can cause lock-up. It is a special case and needs some delay
+@@ -938,6 +962,24 @@ static int vsp1_probe(struct platform_device *pdev)
+ 	/* Configure device parameters based on the version register. */
+ 	pm_runtime_enable(&pdev->dev);
+ 
++	vsp1->boot_logo_handover =
++		of_property_read_bool(pdev->dev.of_node,
++				      "renesas,seamless-boot-logo");
++	if (vsp1->boot_logo_handover) {
++		/*
++		 * The bootloader left this VSP scanning out a splash image.
++		 * Hold it resumed until the DRM pipeline takes over, otherwise
++		 * the put below would runtime-suspend it and
++		 * vsp1_pm_runtime_suspend() would assert the shared LCDC reset
++		 * with the picture still on the wire.
++		 */
++		ret = pm_runtime_resume_and_get(&pdev->dev);
++		if (ret < 0) {
++			vsp1->boot_logo_handover = false;
++			goto done;
++		}
++	}
++
+ 	ret = vsp1_device_get(vsp1);
+ 	if (ret < 0)
+ 		goto done;
+@@ -978,6 +1020,7 @@ static int vsp1_probe(struct platform_device *pdev)
+ 
+ done:
+ 	if (ret) {
++		vsp1_finish_boot_logo_handover(vsp1);
+ 		pm_runtime_disable(&pdev->dev);
+ 		rcar_fcp_put(vsp1->fcp);
+ 	}
+@@ -992,6 +1035,7 @@ static void vsp1_remove(struct platform_device *pdev)
+ 	vsp1_destroy_entities(vsp1);
+ 	rcar_fcp_put(vsp1->fcp);
+ 
++	vsp1_finish_boot_logo_handover(vsp1);
+ 	pm_runtime_disable(&pdev->dev);
+ }
+ 
