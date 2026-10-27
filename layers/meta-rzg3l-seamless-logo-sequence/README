@@ -1,0 +1,234 @@
+meta-rzg3l-seamless-logo-sequence
+=================================
+
+Seamless boot logo sequence for the RZ/G3L SMARC EVK. U-Boot plays a short
+sequence of frames from a few hundred milliseconds after reset and stays on the
+last one.
+The kernel inherits the running display, so the last frame stays on screen
+until the first program in Linux draws. There is no black screen and no HDMI
+re-sync in between.
+
+The layer contains no Linux application. To continue the sequence in Linux,
+use rzg3l-seamless-logo-sequence-app or your own DRM/KMS application. The layer
+and the application do not depend on each other.
+
+Tested with Yocto scarthgap, RZ/G3L BSP v1.0.0, u-boot 2024.07,
+linux-renesas 6.12.46-cip8, MACHINE = "smarc-rzg3l", DISTRO = "rz-vlp",
+core-image-weston.
+
+
+I. Boot sequence
+================
+
+  U-Boot     Brings up CPG, DSI D-PHY and link, ADV7535, DU and VSPD, loads
+             frame 00 from /boot and starts the display on it.
+             *** frame 00 visible ***
+             The remaining frames are loaded behind it and played by the VSPD
+             without CPU involvement. Each frame is held for logo_rate_ms;
+             the last frame is held until Linux takes over.
+  booti      U-Boot tells the kernel, through the device tree, that the
+             display is running and which mode it uses (section V).
+  Kernel     The frame buffers stay reserved, the display clocks stay on, and
+             the display drivers inherit the running pipeline.
+             *** last frame still visible ***
+  Userspace  The first DRM commit (compositor or application) replaces the
+             frame without a mode change.
+
+The sequence plays in parallel with the boot. The only added time is loading
+the frames (about 70 ms per frame at 1080p, after frame 00 is on screen).
+
+
+II. Compatibility
+=================
+
+  meta-rzg3l-seamless-logo-still
+      Cannot be used together with this layer. The build stops with an error
+      if both are present.
+
+  meta-rzg3l-fast-boot
+      Independent. The combination is expected to work but is not tested.
+
+  Applications
+      The layer installs and starts nothing in Linux and does not modify
+      weston-init. Any DRM/KMS client can take the display over. See
+      section VII.
+
+
+III. Build and flash
+====================
+
+  $ source poky/oe-init-build-env build
+  $ bitbake-layers add-layer ../meta-rzg3l-seamless-logo-sequence
+  $ bitbake core-image-weston
+
+The frames are installed into /boot of the rootfs (partition 2 of the WIC
+image). U-Boot is part of bl2/fip. How it reaches the board depends on the
+boot mode (RZ/G3L Linux Start-up Guide):
+
+  QSPI boot (default)
+      Write bl2_bp_spi-smarc-rzg3l.srec and fip-smarc-rzg3l.srec with Flash
+      Writer (Start-up Guide 4.3-4.5). Writing the WIC does NOT update U-Boot.
+  eSD boot
+      The WIC image contains bl2 and fip, so writing the WIC to the microSD
+      card also updates U-Boot (Start-up Guide 8.3).
+  eMMC boot
+      Start-up Guide 8.2.
+
+Write bl2/fip again after any change on the U-Boot side, including the
+resolution or the frame time.
+
+With a new WIC and an old or stock fip, the board boots normally: U-Boot
+shows nothing and the kernel initialises the display itself.
+
+
+IV. Configuration
+=================
+
+All settings go in conf/local.conf.
+
+Frames
+------
+
+  RZG3L_LOGO_SEQUENCE_FRAMES = "l1.bmp l2.bmp l3.bmp l4.bmp"      (default)
+
+The frames U-Boot plays, in this order. Each entry is a file name in this
+layer's recipes-graphics/rzg3l-seamless-logo-sequence-frames/files (or a
+bbappend's), or an absolute path on the build host:
+
+  RZG3L_LOGO_SEQUENCE_FRAMES = "/home/user/logo/a.bmp /home/user/logo/b.bmp"
+
+  - The number of frames is the number of entries.
+  - Uncompressed 24 or 32 bpp BMP, exactly RZG3L_LOGO_SEQUENCE_RESOLUTION in
+    size. The build checks this.
+  - Maximum 14 frames at 1920x1080, 31 frames at 1280x720.
+
+  RZG3L_LOGO_SEQUENCE_PACKAGE = ""
+
+builds an image without frames. U-Boot then shows a black frame and the
+hand-over still takes place.
+
+Frame time
+----------
+
+  RZG3L_LOGO_SEQUENCE_RATE_MS = "1000"                              (default)
+
+Time each frame is held, in milliseconds, compiled into U-Boot. Rounded down
+to whole output frames (16.7 ms at 60 Hz).
+
+Resolution
+----------
+
+  RZG3L_LOGO_SEQUENCE_RESOLUTION = "1920x1080"                      (default)
+  RZG3L_LOGO_SEQUENCE_RESOLUTION = "1280x720"
+
+The mode U-Boot drives. The kernel needs no change. Provide frames of the
+same size.
+
+U-Boot does not read EDID; each resolution is a compiled-in timing table. To
+add one, add a U-Boot patch after 0010 that:
+
+  1. Copies drivers/video/rzg2l/define_1080p.h to a new header and sets the
+     PLL7, D-PHY, DSI link, DU and ADV7535 timings and LCD_CEA_VIC for the
+     mode. The VIC must be a CEA-861 mode with the same timing.
+  2. Adds the header to the table in drivers/video/rzg2l/rzg2l_video.c:
+
+       #elif (RZG2L_LOGO_WIDTH == 1024) && (RZG2L_LOGO_HEIGHT == 768)
+       #include "define_1024x768.h"
+
+The ADV7535 supports up to 148.5 MHz pixel clock (1920x1080@60). The build
+reports an error if RZG3L_LOGO_SEQUENCE_RESOLUTION has no table.
+
+U-Boot environment
+------------------
+
+For tests on the board without a rebuild (setenv, then saveenv):
+
+  logo_rate_ms     frame time in ms; overrides RZG3L_LOGO_SEQUENCE_RATE_MS
+  logo_frames      play at most this many frames
+  logo_mmc_dev     0 (eMMC) or 1 (microSD); detected automatically if unset
+  logo_handover    "no" leaves the display to the kernel (stock behaviour)
+
+The variables are read at power-on, before bootcmd runs.
+
+
+V. Hand-over declaration
+========================
+
+The kernel drivers inherit the display only if their device-tree nodes carry
+"renesas,seamless-boot-logo". U-Boot adds these properties at booti, and only
+after it has started the display:
+
+  /soc/vsp@10870000            renesas,seamless-boot-logo
+  /soc/display@10890000        renesas,seamless-boot-logo
+  /soc/dsi@10850000            renesas,seamless-boot-logo
+  /soc/i2c@10090800/hdmi@3d    renesas,seamless-boot-logo
+                               renesas,seamless-boot-logo-vic = <VIC>
+                               interrupts-extended deleted
+
+The same kernel therefore boots correctly with any bootloader. If the
+declaration is not made, U-Boot prints a "fast-logo:" line with the reason.
+
+
+VI. Verification
+================
+
+U-Boot console:
+
+  fast-logo: 1000 ms per frame
+  fast-logo: intro from mmc 1:2
+  fast-logo: intro is 4 frame(s)
+  fast-logo: intro armed, <n> headers, parks on frame 3
+  ...
+  fast-logo: hand-over declared to the kernel, CEA VIC 16
+  Starting kernel ...
+
+Linux:
+
+  # ls /proc/device-tree/soc/i2c@10090800/hdmi@3d/ | grep seamless
+  renesas,seamless-boot-logo
+  renesas,seamless-boot-logo-vic
+  # ls /boot/fastlogo_*
+  # cat /sys/class/drm/card0-HDMI-A-1/modes
+  1920x1080
+
+Build:
+
+  $ strings tmp/deploy/images/smarc-rzg3l/fip.bin | grep fastlogo_
+  boot/fastlogo_%ux%u_%02u.bin.gz
+
+
+VII. Notes for applications
+===========================
+
+  - The HDMI connector reports one mode, the one U-Boot drives, and is always
+    connected. Use that mode; other modes are rejected.
+  - The first DRM commit takes the display over. Nothing may commit before
+    the program that is meant to own the display.
+  - Only one program can be DRM master. If the compositor also starts, order
+    the application before it (Before=weston.service) and release DRM master
+    before the compositor needs it.
+  - There is no /dev/fb0. Draw through DRM/KMS.
+
+
+VIII. Known limitations
+=======================
+
+  - The HDMI connector is pinned to the U-Boot mode for the lifetime of the
+    system: always connected, no EDID, no hot-plug events. A display that
+    does not support the mode shows no picture.
+  - seamless-logo-sequence.cfg disables the framebuffer console, the kernel
+    logo, DRM fbdev emulation and CONFIG_VT_CONSOLE, because each would draw
+    over the logo. As a result there is no /dev/fb0 and no kernel messages on
+    HDMI. The serial console is not affected. The build fails if any of these
+    options is enabled in the final kernel configuration.
+  - The "splash" image feature is removed (conf/layer.conf).
+  - 0x58000000..0x5fffffff (128 MiB) stays reserved, and the MIPI DSI and
+    LCDC clocks stay on, for the lifetime of the system.
+  - The BSP U-Boot environment has loadaddr=0x58000000, which is frame 00. A
+    manual "ext4load mmc 0:2 - <file>" or "tftp <file>" at the U-Boot prompt
+    overwrites the picture. Give an explicit address.
+  - The frames are loaded from partition 2 (ext4) of the MMC device the board
+    boots from. Other boot media show a black frame.
+  - The hand-over is declared by the booti/bootm device-tree fix-up. Other
+    boot paths (for example bootefi, not tested) do not declare it; the
+    kernel then initialises the display itself.

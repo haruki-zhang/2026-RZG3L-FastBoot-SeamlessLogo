@@ -7,14 +7,14 @@ solution. All files are built for `MACHINE = "smarc-rzg3l"`.
 
 ```plaintext
 image/
-├── fast-boot-fast-logo/          # meta-rzg3l-fast-boot-base + meta-rzg3l-fast-logo (eMMC boot)
+├── fast-boot-seamless-logo-still/   # meta-rzg3l-fast-boot + meta-rzg3l-seamless-logo-still (eMMC boot)
 │   ├── core-image-weston-smarc-rzg3l.rootfs.wic.gz
 │   ├── core-image-weston-smarc-rzg3l.rootfs.wic.bmap
 │   ├── bl2_bp_mmc-smarc-rzg3l.srec
 │   ├── fip-smarc-rzg3l.srec
 │   └── Flash_Writer_SCIF_RZG3L_SMARC_LPDDR4.mot
 │
-└── fast-logo-intro/              # meta-rzg3l-fast-logo-intro
+└── seamless-logo-sequence/          # meta-rzg3l-seamless-logo-sequence
     ├── core-image-weston-smarc-rzg3l.rootfs.wic.gz
     ├── core-image-weston-smarc-rzg3l.rootfs.wic.bmap
     ├── bl2_bp_spi-smarc-rzg3l.srec

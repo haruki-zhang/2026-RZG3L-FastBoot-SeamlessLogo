@@ -1,0 +1,308 @@
+From 4928956b08081ac5f8c4b397504541bfa0493aa9 Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Tue, 29 Sep 2026 18:10:34 +0900
+Subject: [PATCH 09/10] video: rzg2l: play however many frames are installed
+
+The intro length was LOGO_FRAMES_DEFAULT, a compiled-in 4 that the
+payload had to match: install fewer and every boot printed a load error
+and a "cut to N frames" warning; install more and the extra ones were
+never shown.  Replacing the artwork meant rebuilding the bootloader and
+re-flashing fip, for what is really a property of the rootfs.
+
+Load frame 00, 01, ... until the next file does not exist.  Presence is
+checked with file_exists() first, so the normal end of the intro is
+silent instead of an ext4load error.  "logo_frames" in the environment
+still caps the count; with a cap set, a missing frame is reported as
+before, since then it is one the user asked for.  The upper bound is the
+room between LCD_SRCM_ADDR and the display list headers, as it already
+was.
+
+Frame 0 now gets its full share of the screen.  It goes up with the
+pipeline and used to stay only while the other frames loaded - a couple
+of hundred milliseconds - and then the chain moved straight on to frame
+1, so the first picture was visibly shorter than the rest.  The chain
+now starts with however many more output frames frame 0 needs to reach
+logo_rate_ms, counted from when the pipeline started.  The header budget
+check accounts for it.
+
+The default pace comes from RZG2L_LOGO_RATE_MS, which the Yocto layer
+sets from RZG3L_LOGO_SEQUENCE_RATE_MS, and is 1000 ms when built on its own:
+one second a frame, as in the RZ/G2L PoC this intro replaces.
+"logo_rate_ms" overrides it at run time as before.
+
+Upstream-Status: Inappropriate [RZ/G3L boot logo, board specific]
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ drivers/video/rzg2l/rzg2l_video.c | 138 +++++++++++++++++++++---------
+ 1 file changed, 97 insertions(+), 41 deletions(-)
+
+diff --git a/drivers/video/rzg2l/rzg2l_video.c b/drivers/video/rzg2l/rzg2l_video.c
+index c5c57e82bf..51ea9d7d65 100644
+--- a/drivers/video/rzg2l/rzg2l_video.c
++++ b/drivers/video/rzg2l/rzg2l_video.c
+@@ -2,6 +2,8 @@
+ #include <common.h>
+ #include <command.h>
+ #include <env.h>
++#include <fs.h>
++#include <linux/errno.h>
+ 
+ // PFC
+ #define PFC_BASE	0x11030000
+@@ -115,12 +117,22 @@
+ #define LOGO_REFRESH_HZ		(refresh)
+ 
+ /*
+- * Compiled-in defaults. Both are overridden at run time by the "logo_frames"
+- * and "logo_rate_ms" environment variables, so the intro can be retuned with
+- * setenv/saveenv instead of a rebuild and a re-flash of fip.
++ * How long each frame stays on screen.  The Yocto layer passes its
++ * RZG3L_LOGO_SEQUENCE_RATE_MS in as RZG2L_LOGO_RATE_MS.  The "logo_rate_ms"
++ * environment variable overrides it at run time, so the pace can be retuned
++ * with setenv/saveenv instead of a rebuild and a re-flash of fip.
++ */
++#ifndef RZG2L_LOGO_RATE_MS
++#define RZG2L_LOGO_RATE_MS	1000
++#endif
++#define LOGO_RATE_MS_DEFAULT	RZG2L_LOGO_RATE_MS
++
++/*
++ * The number of frames is not compiled in.  The intro is frame 00, 01, ... up
++ * to the first number that has no file, so replacing the artwork with more or
++ * fewer frames only changes the rootfs.  "logo_frames" in the environment can
++ * cap the count below what is installed.
+  */
+-#define LOGO_FRAMES_DEFAULT	4
+-#define LOGO_RATE_MS_DEFAULT	400
+ 
+ /* Frame buffers run from LCD_SRCM_ADDR up to the display list header area. */
+ #define LOGO_FRAMES_MAX \
+@@ -152,17 +164,21 @@ static void rzg2l_vcpd_init(void);
+ static void rzg2l_vcpd_dl_init(void);
+ static void rzg2l_lcdc_start(void);
+ static void rzg2l_wait_frames(unsigned int frames, unsigned int timeout_ms);
+-static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats);
++static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats,
++				   unsigned long *rate_ms, bool *capped);
+ static unsigned int rzg2l_logo_mmc_dev(void);
+ static int rzg2l_logo_load_frame(unsigned int dev, unsigned int index);
+-static void rzg2l_logo_build_chain(unsigned int frames, unsigned int repeats);
++static void rzg2l_logo_build_chain(unsigned int frames, unsigned int first,
++				   unsigned int repeats);
+ 
+ static void rzg2ul_adv7513_init(void);
+ static int adv7513_i2c_reg_write(struct udevice *dev, uint addr, uint mask, uint data);
+ static int adv7513_i2c_reg_read(struct udevice *dev, uint8_t addr, uint8_t *data);
+ 
+ int rzg2l_video_init(void){
+-	unsigned int frames, repeats, i, dev;
++	unsigned int frames, repeats, first, i, dev;
++	unsigned long rate, lit, elapsed;
++	bool capped, blank = false;
+ 	int ret;
+ 
+ 	// adv7535_deinit();
+@@ -197,7 +213,7 @@ int rzg2l_video_init(void){
+ 	adv7535_init();
+ #endif
+ 
+-	rzg2l_logo_read_config(&frames, &repeats);
++	rzg2l_logo_read_config(&frames, &repeats, &rate, &capped);
+ 
+ 	/*
+ 	 * Load the intro's first frame and bring the pipeline up on it.  The
+@@ -240,6 +256,7 @@ int rzg2l_video_init(void){
+ 		memset((void *)(unsigned long)LCD_SRCM_ADDR, 0,
+ 		       LCD_SRCM_ADDR_OFFS);
+ 		frames = 1;
++		blank = true;
+ 	} else {
+ 		printf("fast-logo: intro from mmc %u:2\n", dev);
+ 	}
+@@ -259,6 +276,7 @@ int rzg2l_video_init(void){
+ 	dcache_enable();
+ 
+ 	rzg2l_lcdc_start();
++	lit = get_timer(0);
+ 
+ 	/*
+ 	 * Let the first frame buffer image reach the screen before U-Boot
+@@ -271,38 +289,55 @@ int rzg2l_video_init(void){
+ #ifdef	USE_DISPLAY_LIST
+ 	/*
+ 	 * Frame 0 is on screen.  Load the rest of the intro and hand it to the
+-	 * VSPD as a self-advancing chain.  A frame that will not load simply
+-	 * ends the intro early rather than aborting it - a short animation is
+-	 * a much better failure than a dead one.
++	 * VSPD as a self-advancing chain.  Running out of files is how the
++	 * intro normally ends.  A frame that exists but will not load ends it
++	 * early rather than aborting it - a short animation is a much better
++	 * failure than a dead one.
+ 	 */
+ 	for (i = 1; i < frames; i++) {
+-		if (rzg2l_logo_load_frame(dev, i)) {
++		ret = rzg2l_logo_load_frame(dev, i);
++		if (ret == -ENOENT && !capped)
++			break;
++		if (ret) {
+ 			printf("fast-logo: frame %u did not load, intro cut to %u frame(s)\n",
+ 			       i, i);
+-			frames = i;
+ 			break;
+ 		}
+ 	}
++	frames = i;
++
++	/*
++	 * Frame 0 has been up since the pipeline started, while the others
++	 * loaded.  Hold it for whatever is left of its share, so that it gets
++	 * the same time on screen as every other frame.
++	 */
++	elapsed = get_timer(lit);
++	first = elapsed < rate ?
++		(unsigned int)(((rate - elapsed) * LOGO_REFRESH_HZ) / 1000) : 0;
++
++	if (!blank)
++		printf("fast-logo: intro is %u frame(s)\n", frames);
+ 
+ 	if (frames > 1)
+-		rzg2l_logo_build_chain(frames, repeats);
++		rzg2l_logo_build_chain(frames, first, repeats);
+ #endif	/* USE_DISPLAY_LIST */
+ 
+ 	return 0;
+ }
+ 
+ /*
+- * Number of frames in the intro and how long each is held, from the
+- * environment so that retuning the animation needs neither a rebuild nor a
+- * re-flash of fip.  Frame 0 is a special case: it goes up with the pipeline
+- * and stays until the chain is armed, which is however long the remaining
+- * frames take to load.  @repeats applies to frames 1..frames-1.
++ * How long each frame is held and, optionally, a cap on the number of frames,
++ * from the environment so that retuning the animation needs neither a rebuild
++ * nor a re-flash of fip.  Without "logo_frames" the cap is the room in the
++ * reserved area, and the intro is however many frames are installed.
+  */
+-static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats)
++static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats,
++				   unsigned long *rate_ms, bool *capped)
+ {
+ 	unsigned long n, rate;
+ 
+-	n = env_get_ulong("logo_frames", 10, LOGO_FRAMES_DEFAULT);
++	*capped = env_get("logo_frames") != NULL;
++	n = env_get_ulong("logo_frames", 10, LOGO_FRAMES_MAX);
+ 	if (n < 1)
+ 		n = 1;
+ 	if (n > LOGO_FRAMES_MAX)
+@@ -315,19 +350,25 @@ static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats)
+ 		rate = LOGO_RATE_MS_MAX;
+ 
+ 	*frames = (unsigned int)n;
++	*rate_ms = rate;
+ 	*repeats = (unsigned int)((rate * LOGO_REFRESH_HZ) / 1000);
+ 	if (*repeats < 1)
+ 		*repeats = 1;
+ 
+ 	/*
+-	 * One header per repeat per frame, plus the configuration header.
+-	 * Trim the intro rather than run off the end of the header area.
++	 * At most one header per repeat per frame - frame 0's share included -
++	 * plus the configuration header.  Trim the intro rather than run off
++	 * the end of the header area.
+ 	 */
+ 	while (*frames > 1 &&
+-	       1 + (*frames - 1) * (*repeats) > LOGO_HEADERS_MAX)
++	       1 + (*frames) * (*repeats) > LOGO_HEADERS_MAX)
+ 		(*frames)--;
+ 
+-	printf("fast-logo: %u frame intro, %lu ms per frame\n", *frames, rate);
++	if (*capped)
++		printf("fast-logo: up to %u frame(s), %lu ms per frame\n",
++		       *frames, rate);
++	else
++		printf("fast-logo: %lu ms per frame\n", rate);
+ }
+ 
+ /*
+@@ -360,14 +401,26 @@ static unsigned int rzg2l_logo_mmc_dev(void)
+ 	return run_command("mmc dev 1", 0) == 0 ? 1u : 0u;
+ }
+ 
+-/* Load one gzip-compressed XRGB8888 frame into its slot in the reserved area. */
++/*
++ * Load one gzip-compressed XRGB8888 frame into its slot in the reserved area.
++ *
++ * Returns -ENOENT, without a word on the console, when the file does not
++ * exist: that is how the intro normally ends, and ext4load would otherwise
++ * report it as an error on every boot.
++ */
+ static int rzg2l_logo_load_frame(unsigned int dev, unsigned int index)
+ {
+-	char cmd[128];
++	char part[16], path[64], cmd[128];
+ 	int ret;
+ 
+-	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:2 0x%08x " LOGO_FILE_FMT,
+-		 dev, LOGO_LOAD_ADDR, LCD_HACTIVE, LCD_VACTIVE, index);
++	snprintf(part, sizeof(part), "%u:2", dev);
++	snprintf(path, sizeof(path), LOGO_FILE_FMT, LCD_HACTIVE, LCD_VACTIVE,
++		 index);
++	if (!file_exists("mmc", part, path, FS_TYPE_EXT))
++		return -ENOENT;
++
++	snprintf(cmd, sizeof(cmd), "ext4load mmc %s 0x%08x %s", part,
++		 LOGO_LOAD_ADDR, path);
+ 	ret = run_command(cmd, 0);
+ 	if (ret)
+ 		return ret;
+@@ -1159,33 +1212,36 @@ static void rzg2l_vcpd_dl_init(void)
+ }
+ 
+ /*
+- * Build the intro chain for frames 1..frames-1 and arm it.
++ * Build the intro chain and arm it.
+  *
+- * Each frame gets @repeats consecutive headers, all sharing one body, so the
+- * frame stays on screen for @repeats output frames.  The last header points at
+- * itself: the intro plays once and parks, which is what lets the Linux player
+- * take over from a known frame however long the kernel takes to boot.
++ * Frame 0 is already on screen, through header 0; it gets @first more
++ * headers to make up the rest of its time.  Every other frame gets @repeats
++ * consecutive headers, all sharing one body, so it stays on screen for
++ * @repeats output frames.  The last header points at itself: the intro plays
++ * once and parks, which is what lets a Linux application take over from a
++ * known frame however long the kernel takes to boot.
+  *
+  * Called with the pipeline already running.  The VSPD is a bus master reading
+  * these structures directly, so they are written with the D-cache off - the
+  * disable flushes the frame data written above at the same time.
+  */
+-static void rzg2l_logo_build_chain(unsigned int frames, unsigned int repeats)
++static void rzg2l_logo_build_chain(unsigned int frames, unsigned int first,
++				   unsigned int repeats)
+ {
+-	unsigned int n = 1 + (frames - 1) * repeats;
++	unsigned int n = 1 + first + (frames - 1) * repeats;
+ 	unsigned int i, k, r;
+ 
+ 	dcache_disable();
+ 
+-	/* One body per frame; frame 0's address is already in dl_init. */
+-	for (k = 1; k < frames; k++) {
++	/* One body per frame. */
++	for (k = 0; k < frames; k++) {
+ 		dl_body_frame[k].address = VSPD_VI6_RPF0_SRCM_ADDR_Y;
+ 		dl_body_frame[k].data = LCD_SRCM_ADDR + LCD_SRCM_ADDR_OFFS * k;
+ 	}
+ 
+ 	i = 1;
+-	for (k = 1; k < frames; k++) {
+-		for (r = 0; r < repeats; r++, i++) {
++	for (k = 0; k < frames; k++) {
++		for (r = 0; r < (k ? repeats : first); r++, i++) {
+ 			display_header_t *header = &dl_headers[i];
+ 
+ 			memset(header, 0x00, sizeof (display_header_t));
