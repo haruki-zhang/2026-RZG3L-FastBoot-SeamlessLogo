@@ -1,0 +1,163 @@
+From 53457347adcc90a119d7a7c273b6e5a0fccca9ef Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Tue, 29 Sep 2026 18:08:47 +0900
+Subject: [PATCH] video: rzg2l: pick the display timing from the logo
+ resolution
+
+Make RZG2L_LOGO_WIDTH/HEIGHT the only input for the timing table, the
+frame file names and the CEA VIC, so a new resolution is one define_*.h.
+The resolution is in the file name, so U-Boot never shows frames of the
+wrong size.
+
+Upstream-Status: Inappropriate [RZ/G3L boot logo, board specific]
+---
+ drivers/video/rzg2l/define_1080p.h |  3 ++
+ drivers/video/rzg2l/define_720p.h  |  3 ++
+ drivers/video/rzg2l/rzg2l_video.c  | 77 +++++++++++++++++++++++-------
+ 3 files changed, 66 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/video/rzg2l/define_1080p.h b/drivers/video/rzg2l/define_1080p.h
+index 50820e6dd2..87dba9fcda 100644
+--- a/drivers/video/rzg2l/define_1080p.h
++++ b/drivers/video/rzg2l/define_1080p.h
+@@ -2,6 +2,9 @@
+ #define __DSI_DEFINE__
+ 
+ // 1080p 148.5MHz
++/* CEA-861 VIC of this timing. The kernel pins its HDMI connector to it. */
++#define LCD_CEA_VIC		16
++
+ #define	CPG_PLL7_CLK1_VAL	0x00527000
+ #define	CPG_PLL7_CLK2_VAL	0x00000003
+ 
+diff --git a/drivers/video/rzg2l/define_720p.h b/drivers/video/rzg2l/define_720p.h
+index 86fdbf743e..f8aa248cf5 100644
+--- a/drivers/video/rzg2l/define_720p.h
++++ b/drivers/video/rzg2l/define_720p.h
+@@ -2,6 +2,9 @@
+ #define __DSI_DEFINE__
+ 
+ // 720P 74.25MHz
++/* CEA-861 VIC of this timing. The kernel pins its HDMI connector to it. */
++#define LCD_CEA_VIC		4
++
+ #define	CPG_PLL7_CLK1_VAL	0x04527000
+ #define	CPG_PLL7_CLK2_VAL	0x00000003
+ 
+diff --git a/drivers/video/rzg2l/rzg2l_video.c b/drivers/video/rzg2l/rzg2l_video.c
+index 3dea63c774..524ff79709 100644
+--- a/drivers/video/rzg2l/rzg2l_video.c
++++ b/drivers/video/rzg2l/rzg2l_video.c
+@@ -34,18 +34,43 @@
+ #define MIPI_DSI_720P		1
+ #define	LVDS_720P		2
+ #define PARALLEL_RGB_720P	3
++/* MIPI DSI -> ADV7535 -> HDMI, at the resolution of the timing table below. */
++#define MIPI_DSI		4
+ 
+ /*
+- * 1080p, because the frames of this layer are 1920x1080. This must match
+- * define_1080p.h and the CEA VIC the kernel pins the connector to. Otherwise
+- * the kernel reports a mode that the hardware does not output.
++ * The driver does not read EDID, so each mode is a table of fixed timings in a
++ * define_*.h header. RZG2L_LOGO_WIDTH/HEIGHT select it. The Yocto layer sets
++ * them from RZG3L_LOGO_SEQUENCE_RESOLUTION (KCFLAGS). Default: 1080p.
++ *
++ * To add a resolution:
++ *   1. Copy define_1080p.h and set the timings and LCD_CEA_VIC. The kernel
++ *      pins its HDMI connector to that CEA mode.
++ *   2. Add an #elif for it below.
++ *
++ * The ADV7535 supports up to 148.5 MHz pixel clock (1920x1080@60).
+  */
+-#define	DISPLAY_MODE MIPI_DSI_1080P
++#ifndef RZG2L_LOGO_WIDTH
++#define RZG2L_LOGO_WIDTH	1920
++#endif
++#ifndef RZG2L_LOGO_HEIGHT
++#define RZG2L_LOGO_HEIGHT	1080
++#endif
++
++#define	DISPLAY_MODE		MIPI_DSI
+ 
+-#if (DISPLAY_MODE == MIPI_DSI_1080P)
++#if (RZG2L_LOGO_WIDTH == 1920) && (RZG2L_LOGO_HEIGHT == 1080)
+ #include "define_1080p.h"
+-#else
++#elif (RZG2L_LOGO_WIDTH == 1280) && (RZG2L_LOGO_HEIGHT == 720)
+ #include "define_720p.h"
++#else
++#error "no display timing for RZG2L_LOGO_WIDTH x RZG2L_LOGO_HEIGHT - add a define_*.h, see above"
++#endif
++
++#if (LCD_HACTIVE != RZG2L_LOGO_WIDTH) || (LCD_VACTIVE != RZG2L_LOGO_HEIGHT)
++#error "the selected timing table does not describe RZG2L_LOGO_WIDTH x RZG2L_LOGO_HEIGHT"
++#endif
++#ifndef LCD_CEA_VIC
++#error "the selected timing table does not name its CEA VIC (LCD_CEA_VIC)"
+ #endif
+ 
+ /* Frame buffer offset */
+@@ -73,14 +98,15 @@
+  */
+ #define LOGO_LOAD_ADDR		0x48000000
+ 
+-#if (DISPLAY_MODE == MIPI_DSI_1080P)
+-#define LOGO_FILE_PREFIX	"boot_img_1080p"
+-#else
+-#define LOGO_FILE_PREFIX	"boot_img_720p"
+-#endif
++/*
++ * The resolution is part of the file name. If U-Boot and the rootfs are built
++ * for different resolutions, U-Boot finds no file. It does not show frames
++ * with the wrong stride.
++ */
++#define LOGO_FILE_FMT		"boot/fastlogo_%ux%u_%02u.bin.gz"
+ 
+-/* CEA VIC 16 and VIC 4 are both 60 Hz. */
+-#define LOGO_REFRESH_HZ		60
++/* Output frame rate, from the timing table. */
++#define LOGO_REFRESH_HZ		(refresh)
+ 
+ /*
+  * Time per frame, from RZG3L_LOGO_SEQUENCE_RATE_MS. "logo_rate_ms" in the
+@@ -353,7 +379,7 @@ static int rzg2l_logo_load_frame(unsigned int dev, unsigned int index)
+ 	int ret;
+ 
+ 	snprintf(part, sizeof(part), "%u:2", dev);
+-	snprintf(path, sizeof(path), "boot/" LOGO_FILE_PREFIX "_%02u.bin.gz",
++	snprintf(path, sizeof(path), LOGO_FILE_FMT, LCD_HACTIVE, LCD_VACTIVE,
+ 		 index);
+ 	if (!file_exists("mmc", part, path, FS_TYPE_EXT))
+ 		return -ENOENT;
+@@ -364,10 +390,27 @@ static int rzg2l_logo_load_frame(unsigned int dev, unsigned int index)
+ 	if (ret)
+ 		return ret;
+ 
+-	snprintf(cmd, sizeof(cmd), "unzip 0x%08x 0x%08lx", LOGO_LOAD_ADDR,
++	/*
++	 * Limit unzip to one frame slot. A larger frame would overwrite the
++	 * next slot or the display lists in use by the VSPD.
++	 */
++	snprintf(cmd, sizeof(cmd), "unzip 0x%08x 0x%08lx 0x%x", LOGO_LOAD_ADDR,
+ 		 (unsigned long)LCD_SRCM_ADDR +
+-		 (unsigned long)LCD_SRCM_ADDR_OFFS * index);
+-	return run_command(cmd, 0);
++		 (unsigned long)LCD_SRCM_ADDR_OFFS * index,
++		 LCD_SRCM_ADDR_OFFS);
++	ret = run_command(cmd, 0);
++	if (ret)
++		return ret;
++
++	/* A short frame would leave the rest of its slot stale. */
++	if (env_get_hex("filesize", 0) != LCD_SRCM_ADDR_OFFS) {
++		printf("fast-logo: frame %u is 0x%lx bytes, expected 0x%x (%ux%u XRGB8888)\n",
++		       index, env_get_hex("filesize", 0), LCD_SRCM_ADDR_OFFS,
++		       LCD_HACTIVE, LCD_VACTIVE);
++		return 1;
++	}
++
++	return 0;
+ }
+ 
+ static const uint32_t cpg_register_values[][2] = {//0x11010000  //step1

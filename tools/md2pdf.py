@@ -15,7 +15,8 @@ Layout rules:
     is a paragraph that introduces the next block (ends with ':')
   - code blocks never wrap: each block's font size is chosen so that its
     longest line fits the available width
-  - inline code (file names, paths, variables) is never broken across lines
+  - inline code (file names, paths, variables) is never broken across lines,
+    except in table cells, where long names may break after '-' or '/'
 
 The HTML is printed with headless Firefox over Marionette, and Ghostscript
 adds the "Page N" footer and the document title.
@@ -91,6 +92,7 @@ table { break-inside: avoid; border-collapse: collapse; width: 100%;
 th { background: #e6edf6; color: #102a43; font-weight: bold; text-align: left;
      border: 1px solid #b9c9dc; padding: 4pt 6pt; }
 td { border: 1px solid #c9d6e6; padding: 4pt 6pt; vertical-align: top; }
+td code, th code { white-space: normal; }
 tr { break-inside: avoid; }
 
 blockquote { break-inside: avoid; margin: 6pt 0 10pt; padding: 6pt 11pt;
@@ -102,11 +104,14 @@ blockquote p:last-child { margin: 0; }
 
 
 # --- Inline markup -------------------------------------------------------------
-def inline(text):
+def inline(text, cell=False):
     codes = []
 
     def stash(m):
-        codes.append('<code>%s</code>' % html.escape(m.group(1), quote=False))
+        code = html.escape(m.group(1), quote=False)
+        if cell:
+            code = re.sub(r'([-/])', r'\1<wbr>', code)
+        codes.append('<code>%s</code>' % code)
         return '\x00%d\x00' % (len(codes) - 1)
 
     text = re.sub(r'`([^`]*)`', stash, text)
@@ -151,10 +156,10 @@ def table_block(lines):
         rows.append(cells)
     head, body = rows[0], [r for r in rows[2:]]
     h = ['<table><thead><tr>']
-    h += ['<th>%s</th>' % inline(c) for c in head]
+    h += ['<th>%s</th>' % inline(c, True) for c in head]
     h.append('</tr></thead><tbody>')
     for r in body:
-        h.append('<tr>' + ''.join('<td>%s</td>' % inline(c) for c in r) + '</tr>')
+        h.append('<tr>' + ''.join('<td>%s</td>' % inline(c, True) for c in r) + '</tr>')
     h.append('</tbody></table>')
     return ''.join(h)
 

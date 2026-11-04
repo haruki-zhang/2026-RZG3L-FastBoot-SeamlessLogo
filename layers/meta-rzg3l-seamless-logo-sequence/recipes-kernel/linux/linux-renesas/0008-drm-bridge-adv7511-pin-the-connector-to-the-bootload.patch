@@ -1,60 +1,34 @@
-From 1e72f163bbd11ec4ba7761f8f304574d62a3854d Mon Sep 17 00:00:00 2001
+From 0ed3a963d4cdc39051173b64820a4ed58d739207 Mon Sep 17 00:00:00 2001
 From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Date: Wed, 5 Aug 2026 12:00:05 +0900
 Subject: [PATCH] drm/bridge: adv7511: pin the connector to the bootloader's
  mode
 
-Inheriting a running pipeline is only half of a seamless hand-over.  The
-other half is making sure nothing later asks for a different mode, because
-every register that would implement a mode change has deliberately been
-left alone: the CRTC does not rewrite DU_DITR0..4, the DSI does not
-re-lock PLL7 and the encoder does not rewrite its timing.  If userspace
-picks a second mode the kernel believes the change happened while the
-hardware keeps scanning out the old one, and the result is a mismatched or
-dead link rather than a seamless one.
+The hand-over keeps the mode registers, so another mode would break the
+link. With "renesas,seamless-boot-logo-vic", offer only that CEA mode and
+report connected. Compare modes without the aspect ratio, so clients
+without DRM_CLIENT_CAP_ASPECT_RATIO can set it.
 
-Suppressing the EDID by itself does not achieve this - it only removes the
-source of the mode list.  Whatever modes remain, including the fallbacks
-drm_helper_probe_single_connector_modes() adds when a connector reports
-none, are still selectable.
+U-Boot adds the property at boot.
 
-So pin the mode explicitly.  When "renesas,seamless-boot-logo-vic" names
-the CEA VIC the bootloader programmed, advertise DRM_BRIDGE_OP_MODES
-instead of DRM_BRIDGE_OP_EDID and hand out exactly that one mode, marked
-preferred, from .get_modes; .mode_valid then rejects everything else.
-Because the mode comes from the CEA tables it is numerically identical to
-what the DU driver would have computed - for VIC 16 that is 1920x1080@60,
-2200x1125 total, 148.5 MHz, positive syncs, which is exactly what U-Boot
-writes into DU_DITR0..4 and the ADV7535 timing generator.
-
-Unlike the hand-over flag this is not one-shot: the pinning stays in
-effect for the lifetime of the system, since a later mode change would be
-just as wrong as one during boot.
-
-The property is not written into the board .dts.  The bootloader adds
-it to the tree it hands over, together with "renesas,seamless-boot-logo",
-from the timing it actually programmed - so a kernel booted by a
-bootloader that did not light the display is not pinned at all.
-
-Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
+Upstream-Status: Inappropriate [RZ/G3L boot logo, board specific]
 ---
- drivers/gpu/drm/bridge/adv7511/adv7511.h     |  8 +++
- drivers/gpu/drm/bridge/adv7511/adv7511_drv.c | 65 +++++++++++++++++++-
- 2 files changed, 70 insertions(+), 3 deletions(-)
+ drivers/gpu/drm/bridge/adv7511/adv7511.h     |  7 ++
+ drivers/gpu/drm/bridge/adv7511/adv7511_drv.c | 79 ++++++++++++++++++--
+ 2 files changed, 79 insertions(+), 7 deletions(-)
 
 diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511.h b/drivers/gpu/drm/bridge/adv7511/adv7511.h
-index 62db131..ff45779 100644
+index 056e46858d4e..b963f7f02c7a 100644
 --- a/drivers/gpu/drm/bridge/adv7511/adv7511.h
 +++ b/drivers/gpu/drm/bridge/adv7511/adv7511.h
-@@ -399,6 +399,14 @@ struct adv7511 {
+@@ -397,6 +397,13 @@ struct adv7511 {
  	 */
  	bool boot_logo_handover;
  
 +	/*
-+	 * CEA VIC of the mode the bootloader programmed, from
-+	 * "renesas,seamless-boot-logo-vic".  Unlike @boot_logo_handover this is
-+	 * never cleared: the connector stays pinned to that single mode for the
-+	 * lifetime of the system.  Zero disables pinning.
++	 * CEA VIC of the bootloader's mode, from
++	 * "renesas,seamless-boot-logo-vic". Never cleared: the connector keeps
++	 * this one mode for the lifetime of the system. 0: not pinned.
 +	 */
 +	u8 boot_logo_vic;
 +
@@ -62,21 +36,35 @@ index 62db131..ff45779 100644
  	u8   cec_addr[ADV7511_MAX_ADDRS];
  	u8   cec_valid_addrs;
 diff --git a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
-index 6fd1d15..17a5a49 100644
+index 0c330f789545..24bcc3bf783d 100644
 --- a/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
 +++ b/drivers/gpu/drm/bridge/adv7511/adv7511_drv.c
-@@ -985,12 +985,53 @@ static void adv7511_bridge_mode_set(struct drm_bridge *bridge,
+@@ -682,11 +682,14 @@ adv7511_detect(struct adv7511 *adv7511, struct drm_connector *connector)
+ 	int ret;
+ 
+ 	/*
+-	 * The sink shows the bootloader's picture, so it is connected. The
+-	 * hardware answer could take the "cable was re-plugged" branch below,
+-	 * which re-powers the encoder.
++	 * A pinned connector is always connected. Without the ADV7535 interrupt
++	 * the KMS helper polls this every 10 s. A poll that reads the hardware
++	 * can take the "cable was re-plugged" branch below: the HPD edge
++	 * latched in U-Boot and powered = true from probe are enough. That
++	 * re-powers the encoder and reports disconnected, and the compositor
++	 * drops the output.
+ 	 */
+-	if (adv7511->boot_logo_handover) {
++	if (adv7511->boot_logo_handover || adv7511->boot_logo_vic) {
+ 		adv7511->status = connector_status_connected;
+ 		return adv7511->status;
+ 	}
+@@ -990,12 +993,57 @@ static void adv7511_bridge_mode_set(struct drm_bridge *bridge,
  	adv7511_mode_set(adv, mode, adj_mode);
  }
  
 +/*
-+ * Advertise exactly the mode the bootloader programmed, and nothing else.
-+ *
-+ * Suppressing the EDID is not enough to keep the pipeline seamless: it only
-+ * removes the source of the mode list.  Userspace would still be free to pick
-+ * one of the fallback modes the KMS core adds, and the kernel would then
-+ * believe a mode change is in progress while the hardware keeps scanning out
-+ * the bootloader's timing.
++ * Offer only the bootloader's mode. Without EDID the KMS core adds fallback
++ * modes, and selecting one would change the mode in software only.
 + */
 +static int adv7511_bridge_get_modes(struct drm_bridge *bridge,
 +				    struct drm_connector *connector)
@@ -109,7 +97,16 @@ index 6fd1d15..17a5a49 100644
 +		if (!pinned)
 +			return MODE_ERROR;
 +
-+		match = drm_mode_equal(pinned, mode);
++		/*
++		 * Ignore the picture aspect ratio. A client without
++		 * DRM_CLIENT_CAP_ASPECT_RATIO sets the mode back without it,
++		 * and drm_mode_equal() would reject it with -EINVAL.
++		 */
++		match = drm_mode_match(pinned, mode,
++				       DRM_MODE_MATCH_TIMINGS |
++				       DRM_MODE_MATCH_CLOCK |
++				       DRM_MODE_MATCH_FLAGS |
++				       DRM_MODE_MATCH_3D_FLAGS);
 +		drm_mode_destroy(bridge->dev, pinned);
 +
 +		if (!match)
@@ -119,7 +116,7 @@ index 6fd1d15..17a5a49 100644
  	if (adv->info->has_dsi)
  		return adv7533_mode_valid(adv, mode);
  	else
-@@ -1052,6 +1093,7 @@ static const struct drm_bridge_funcs adv7511_bridge_funcs = {
+@@ -1057,6 +1105,7 @@ static const struct drm_bridge_funcs adv7511_bridge_funcs = {
  	.mode_valid = adv7511_bridge_mode_valid,
  	.attach = adv7511_bridge_attach,
  	.detect = adv7511_bridge_detect,
@@ -127,7 +124,7 @@ index 6fd1d15..17a5a49 100644
  	.edid_read = adv7511_bridge_edid_read,
  	.hpd_notify = adv7511_bridge_hpd_notify,
  
-@@ -1284,6 +1326,14 @@ static int adv7511_probe(struct i2c_client *i2c)
+@@ -1289,6 +1338,14 @@ static int adv7511_probe(struct i2c_client *i2c)
  	adv7511->boot_logo_handover =
  		of_property_read_bool(dev->of_node,
  				      "renesas,seamless-boot-logo");
@@ -142,7 +139,7 @@ index 6fd1d15..17a5a49 100644
  
  	memset(&link_config, 0, sizeof(link_config));
  
-@@ -1398,9 +1448,18 @@ static int adv7511_probe(struct i2c_client *i2c)
+@@ -1405,9 +1462,17 @@ static int adv7511_probe(struct i2c_client *i2c)
  		goto err_unregister_cec;
  
  	adv7511->bridge.funcs = &adv7511_bridge_funcs;
@@ -151,9 +148,8 @@ index 6fd1d15..17a5a49 100644
 -		adv7511->bridge.ops |= DRM_BRIDGE_OP_HPD;
 +	if (adv7511->boot_logo_vic) {
 +		/*
-+		 * Advertise the pinned mode instead of the sink's EDID, and do
-+		 * not report hotplug: re-reading the EDID could only offer
-+		 * userspace a mode the bootloader did not program.
++		 * No EDID and no hotplug: the EDID could only offer modes the
++		 * bootloader did not program.
 +		 */
 +		adv7511->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_MODES;
 +	} else {

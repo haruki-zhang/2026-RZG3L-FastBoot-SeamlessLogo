@@ -1,11 +1,8 @@
-# journald tuning for fast boot:
-#   Storage=volatile   keep the journal in RAM, never write to eMMC/SD
-#   ForwardTo*=no      do not re-emit records to the serial console or kmsg
-#   MaxLevel*=warning  drop info-level noise
+# Writing the journal to eMMC/SD and copying it to the serial console both
+# slow the boot. Keep it in RAM and store warnings only.
 #
-# Note when measuring: MaxLevelStore=warning also drops an application's
-# info-level stderr, so temporarily raise it to info before reading
-# time-to-first-frame out of the journal.
+# MaxLevelStore=warning also drops info-level application output. Raise it
+# to info when a measurement reads timestamps from the journal.
 do_install:append() {
     install -d ${D}${systemd_unitdir}/journald.conf.d
     cat > ${D}${systemd_unitdir}/journald.conf.d/99-fastboot.conf <<'EOF'

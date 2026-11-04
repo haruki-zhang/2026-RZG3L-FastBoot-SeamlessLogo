@@ -4,60 +4,51 @@ Date: Mon, 7 Sep 2026 10:00:00 +0900
 Subject: [PATCH] arm64: dts: renesas: rzg3l-smarc: disable unused peripherals
  for fast boot
 
-Every enabled node costs boot time twice: once when its driver probes, and
-again when udev turns the resulting device into systemd units that the boot
-transaction has to walk.
+Each enabled node costs probe time and udev events at boot. Disable the
+nodes the fast-boot profile does not use. The display path is not
+changed, so the seamless logo layers still work.
 
-Collect the nodes the fast-boot product profile does not use into one
-overlay and include it at the end of the board .dts, so the pruning is
-visible in a single file instead of scattered through the board
-description.  Only sound_card has to be edited in place - it has no label,
-so an overlay cannot reach it.
-
-The display path (vspd, du, dsi, i2c2 with the ADV7535) is deliberately
-left alone, which is what lets meta-rzg3l-seamless-logo-still stack on top of this
-layer without either one having to know about the other.
-
-Upstream-Status: Inappropriate [RZ/G3L fast-boot product profile, board specific]
+Upstream-Status: Inappropriate [RZ/G3L fast-boot profile, board specific]
 ---
  .../boot/dts/renesas/r9a08g046l48-smarc.dts   |  4 ++
- .../dts/renesas/rzg3l-smarc-fastboot.dtsi     | 68 +++++++++++++++++++
- 2 files changed, 72 insertions(+)
+ .../dts/renesas/rzg3l-smarc-fastboot.dtsi     | 66 +++++++++++++++++++
+ 2 files changed, 70 insertions(+)
  create mode 100644 arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi
 
 diff --git a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
+index 7fbce3357545..81d32825a327 100644
 --- a/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
 +++ b/arch/arm64/boot/dts/renesas/r9a08g046l48-smarc.dts
-@@ -309,5 +309,6 @@ sound_card {
+@@ -309,6 +309,7 @@ sound_card {
  		compatible = "audio-graph-card";
  		label = "HDMI-Audio";
  		dais = <&i2s2_port>;
 +		status = "disabled";
  	};
  #endif
+ 
 @@ -972,3 +973,6 @@ i2s2_cpu_endpoint: endpoint {
  	};
  };
  #endif
 +
-+/* Fast-boot peripheral pruning. Keep this the last line of the file. */
++/* Last, so that its status overrides take effect. */
 +#include "rzg3l-smarc-fastboot.dtsi"
 diff --git a/arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi b/arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi
 new file mode 100644
+index 000000000000..9bf6b5e55f65
 --- /dev/null
 +++ b/arch/arm64/boot/dts/renesas/rzg3l-smarc-fastboot.dtsi
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,66 @@
 +// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 +/*
-+ * RZ/G3L SMARC fast-boot device-tree pruning.
++ * Peripherals not used by the fast-boot profile. A disabled node is neither
++ * probed nor reported to udev, which saves boot time.
 + *
-+ * Disables the peripherals the fast-boot profile does not use, so the kernel
-+ * neither probes them nor emits udev events for them.  Restoring a function
-+ * means re-enabling the node here *and* its kernel config and its userspace
-+ * service - see README section V.
++ * To restore a function, also re-enable its kernel options and its userspace
++ * service.
 + *
-+ * The display path is deliberately untouched: vspd, du, dsi and i2c2 - which
-+ * carries the ADV7535 HDMI bridge - all stay enabled.
++ * The display path (vspd, du, dsi, i2c2 with the ADV7535) stays enabled.
 + */
 +
 +/* Ethernet */
@@ -74,7 +65,7 @@ new file mode 100644
 +&ehci1      { status = "disabled"; };
 +&ohci1      { status = "disabled"; };
 +
-+/* PCIe: skips enumeration of an empty slot. */
++/* PCIe: no enumeration of an empty slot. */
 +&pcie       { status = "disabled"; };
 +
 +/* RSPI2 */
@@ -96,13 +87,13 @@ new file mode 100644
 +&snd_rzg3l  { status = "disabled"; };
 +&i2c3       { status = "disabled"; };
 +
-+/* i2c0 carries only versa3, which clocks the audio and Ethernet blocks. */
++/* i2c0 has only versa3, the clock for the audio and Ethernet blocks. */
 +&i2c0       { status = "disabled"; };
 +
-+/* adc0. adc1 stays enabled: it is the TSU thermal-protection input. */
++/* adc0. adc1 stays: it is the thermal protection input. */
 +&adc0       { status = "disabled"; };
 +
-+/* PWM and its output protection: no backlight on the HDMI path. */
++/* PWM and its output protection: HDMI needs no backlight. */
 +&gpt        { status = "disabled"; };
 +&poegd      { status = "disabled"; };
 +
@@ -114,5 +105,4 @@ new file mode 100644
 +&rtc        { status = "disabled"; };
 +&vbattb     { status = "disabled"; };
 +
-+/* sdhi1 (microSD) stays enabled: it is the development boot path. */
-
++/* sdhi1 (microSD) stays: it is the development boot path. */

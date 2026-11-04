@@ -1,0 +1,64 @@
+meta-rzg3l-seamless-logo-cm33-anim
+==================================
+
+CM33 boot animation for the RZ/G3L SMARC EVK. The Cortex-M33 plays an
+animation over the still logo of meta-rzg3l-seamless-logo-still, until the
+first Weston frame. The Cortex-A55 only loads the frames in U-Boot; it is not
+involved while the animation plays.
+
+Default: a 12-dot spinner below the Renesas wordmark, with a simulated
+percentage inside. The percentage counts from 1 % to 99 % in 20 s
+(FLA_ANIM_PROGRESS_S), then stays at 99 % while the spinner keeps turning.
+
+Tested with RZ/G3L BSP v1.0.0, Multi-OS package v4.2.0,
+MACHINE = "smarc-rzg3l", core-image-weston.
+
+
+I. Changes
+==========
+
+  U-Boot    Adds a second display layer over the still logo. Loads the
+            animation frames from /boot and passes them to the CM33.
+  CM33      Bare-metal firmware, started by BL2. It switches the frames
+            until Linux takes over the display. The frames before the loop
+            start are played once, the rest loops.
+  Frames    Made at build time and installed into /boot: the spinner with
+            the percentage, or own PNG files (FLA_ANIM_FRAMES).
+  Multi-OS  BL2 loading of the CM33 firmware is enabled.
+
+
+II. Build
+=========
+
+Start from the default BSP build environment (RZ/G3L Linux Start-up Guide,
+2.2). Extract the Multi-OS package in the workspace, then add the layers:
+
+  $ bitbake-layers add-layer ../meta-rz-features/meta-rz-multi-os/meta-rzg/meta-rzg3l
+  $ bitbake-layers add-layer ../meta-rzg3l-seamless-logo-still
+  $ bitbake-layers add-layer ../meta-rzg3l-seamless-logo-cm33-anim
+
+Set in conf/local.conf:
+
+  USE_OPENAMP = "0"
+
+Build:
+
+  $ MACHINE=smarc-rzg3l bitbake core-image-weston
+
+
+III. Notes
+==========
+
+  - Cannot be combined with meta-rzg3l-seamless-logo-sequence.
+  - With meta-rzg3l-fast-boot: add meta-rzg3l-fast-boot first.
+  - The time from 1 % to 99 %, the frames, the frame time and the position
+    are set in local.conf with FLA_ANIM_*. See the guide, section 5.3.
+    For example, 99 % after 12 s:
+
+      FLA_ANIM_PROGRESS_S = "12"
+
+  - Every frame is stored. U-Boot loads them after the logo is on screen,
+    before the kernel starts: about 0.27 s with the default (172 frames,
+    25 MB). A longer FLA_ANIM_PROGRESS_S means more frames and more time.
+  - The percentage is simulated. It does not follow the boot progress.
+  - OpenAMP cannot be used on the CM33 at the same time.

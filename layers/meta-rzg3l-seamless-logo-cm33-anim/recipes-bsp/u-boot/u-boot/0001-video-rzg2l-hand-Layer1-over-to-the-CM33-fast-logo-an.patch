@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Tue, 27 Oct 2026 14:00:00 +0900
+Subject: [PATCH] video: rzg2l: hand Layer1 over to the CM33 fast logo
+ animation
+
+Set up Layer1 before rzg2l_lcdc_start(), because the display lists must
+not change while the VSPD runs. Start the animation once the still logo
+is on screen, so loading the frames does not delay it.
+
+Upstream-Status: Inappropriate [RZ/G3L CM33 boot logo animation, board specific]
+---
+ drivers/video/rzg2l/Makefile      | 1 +
+ drivers/video/rzg2l/rzg2l_video.c | 7 +++++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/drivers/video/rzg2l/Makefile b/drivers/video/rzg2l/Makefile
+index e3f3bd33df..9ac37bf4d1 100644
+--- a/drivers/video/rzg2l/Makefile
++++ b/drivers/video/rzg2l/Makefile
+@@ -4,3 +4,4 @@
+ # SJX.
+ 
+ obj-y += rzg2l_video.o
++obj-y += rzg2l_fla.o
+diff --git a/drivers/video/rzg2l/rzg2l_video.c b/drivers/video/rzg2l/rzg2l_video.c
+index 10b28ff182..9bba373e48 100644
+--- a/drivers/video/rzg2l/rzg2l_video.c
++++ b/drivers/video/rzg2l/rzg2l_video.c
+@@ -1,6 +1,7 @@
+ #include "rzg2l_video.h"
+ #include <common.h>
+ #include <command.h>
++#include "rzg2l_fla.h"
+ 
+ // PFC
+ #define PFC_BASE	0x11030000
+@@ -152,6 +153,9 @@ int rzg2l_video_init(void){
+ 	 */
+ 	rzg2l_wait_frames(2, 100);
+ 
++	/* After the still logo is on screen, so the frames do not delay it. */
++	rzg2l_fla_start();
++
+ 	return 0;
+ }
+ 
+@@ -928,6 +932,9 @@ static void rzg2l_vcpd_dl_init(void)
+ 	header->list[0].pList = (uint32_t)dl_body[2];
+ 	header->pNext_header = DISPLAY_LIST_HEADER_2;
+ 	header->flags = 1;
++
++	/* Before rzg2l_lcdc_start(): the display lists must not change while the VSPD runs. */
++	rzg2l_fla_setup(dl_headers[0], dl_headers[1], LCD_HACTIVE, LCD_VACTIVE);
+ }
+ 
+ void rzg2l_video_update(void)
+-- 
+2.53.0
+

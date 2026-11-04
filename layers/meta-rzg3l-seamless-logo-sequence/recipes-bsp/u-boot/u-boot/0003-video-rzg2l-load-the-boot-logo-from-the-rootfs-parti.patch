@@ -1,39 +1,20 @@
-From 4cc8004218a67e3317c63640a41ea31f76c08e92 Mon Sep 17 00:00:00 2001
+From 28b6c7b9ef412532228c3d6bfe84ea9740bdb0b1 Mon Sep 17 00:00:00 2001
 From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Date: Mon, 24 Aug 2026 09:30:00 +0900
-Subject: [PATCH 3/4] video: rzg2l: load the boot logo from the rootfs
- partition
+Subject: [PATCH] video: rzg2l: load the boot logo from the rootfs partition
 
-The splash image was loaded with
+Partition 1 is the vfat boot partition, so "ext4load mmc 0:1" always
+failed and the display started on stale DRAM. Load the logo from /boot
+on partition 2. If loading fails, show a black frame: the kernel will not
+start the display itself.
 
-    ext4load mmc 0:1 0x48000000 boot_img_720p.bin.gz
-
-but partition 1 of the RZ BSP image layout is the vfat "bootloader"
-partition (meta-rz-bsp/wic/rz-image-bootpart-mmc.wks), so ext4load can
-never mount it.  fs_set_blk_dev() finds the partition, fails to probe it
-as ext4 and do_load() prints "Can't set block device"; the unzip that
-follows then runs on whatever was left at 0x48000000 and prints "Error:
-Bad gzipped data".  The LCDC is started regardless, so the panel comes up
-scanning out uninitialised DRAM.
-
-Read the image from partition 2 instead, out of /boot, where the BSP
-environment already keeps Image and the device tree - one ext4 partition
-then serves every file U-Boot reads, and the block cache is warm by the
-time bootcmd loads the kernel.
-
-Check both commands.  On failure blank the frame buffer and carry on
-rather than returning early: the device tree declares the seamless
-hand-over, so every kernel driver on the DRAM -> HDMI path skips its own
-modeset, and a bootloader that leaves the LCDC off would cost the Weston
-splash as well.  A blank screen plus a console warning is the least
-surprising outcome.
-Upstream-Status: Inappropriate [RZ/G3L fast-boot logo, board specific]
+Upstream-Status: Inappropriate [RZ/G3L boot logo, board specific]
 ---
- drivers/video/rzg2l/rzg2l_video.c | 31 +++++++++++++++++++++++++++----
- 1 file changed, 27 insertions(+), 4 deletions(-)
+ drivers/video/rzg2l/rzg2l_video.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/video/rzg2l/rzg2l_video.c b/drivers/video/rzg2l/rzg2l_video.c
-index ecbf6ec314..14bf08feaf 100644
+index ecbf6ec314..5c161adf2f 100644
 --- a/drivers/video/rzg2l/rzg2l_video.c
 +++ b/drivers/video/rzg2l/rzg2l_video.c
 @@ -65,6 +65,7 @@ static int adv7513_i2c_reg_write(struct udevice *dev, uint addr, uint mask, uint
@@ -44,17 +25,14 @@ index ecbf6ec314..14bf08feaf 100644
  
  	// adv7535_deinit();
  	rzg2l_cpg_init();
-@@ -98,13 +99,35 @@ int rzg2l_video_init(void){
+@@ -98,13 +99,29 @@ int rzg2l_video_init(void){
  	adv7535_init();
  #endif
  
 -	/* Load image data for splash screen */
 +	/*
-+	 * Load the splash image.  It is installed in /boot on the rootfs
-+	 * partition, next to Image and the device tree, so the same ext4
-+	 * partition serves every file U-Boot reads.  Partition 1 is the vfat
-+	 * "bootloader" partition of the BSP image layout and ext4load cannot
-+	 * mount it.
++	 * From /boot on partition 2, next to Image and the device tree.
++	 * Partition 1 is vfat, which ext4load cannot read.
 +	 */
  #if (DISPLAY_MODE == MIPI_DSI_1080P)
 -	run_command("ext4load mmc 0:1 0x48000000 boot_img_1080p.bin.gz",0);
@@ -69,12 +47,9 @@ index ecbf6ec314..14bf08feaf 100644
 +
 +	if (ret) {
 +		/*
-+		 * Start the pipeline anyway, on a blanked frame buffer.  The
-+		 * device tree tells the kernel that the bootloader handed it a
-+		 * running display and every driver on the path skips its own
-+		 * modeset, so leaving the LCDC off here would cost the Weston
-+		 * splash too - and scanning out uninitialised DRAM would put
-+		 * noise on the screen instead of the missing logo.
++		 * Start the pipeline anyway, on a black frame. The device tree
++		 * declares the hand-over, so the kernel does not start the
++		 * display itself. Uninitialised DRAM would show noise.
 +		 */
 +		printf("fast-logo: no splash image, showing a blank screen\n");
 +		memset((void *)(unsigned long)LCD_SRCM_ADDR, 0,

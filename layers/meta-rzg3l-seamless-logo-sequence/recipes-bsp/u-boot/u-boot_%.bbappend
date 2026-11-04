@@ -1,27 +1,8 @@
-# Bring the MIPI DSI -> ADV7535 -> HDMI pipeline up in U-Boot, play the boot
-# logo frames once through a self-advancing VSPD display list chain and park on
-# the last one, then tell the kernel it has a running pipeline to inherit.
+# Keep the numeric order: 0003-0008 change the driver added by 0002.
+# 0001-0004 are the same as in meta-rzg3l-seamless-logo-still, and 0008 is the
+# same change as its 0005.
 #
-#   0001-0004  imported verbatim from meta-rzg3l-seamless-logo-still:
-#              CONFIG_VIDEO, the drivers/video/rzg2l display driver run from
-#              init_sequence_r, the frames loaded from /boot on the rootfs
-#              partition, and a two-frame wait instead of a flat second
-#   0005-0007  1080p, the self-advancing display list chain that plays once
-#              and parks, and run-time detection of the boot medium
-#   0008       the timing table is picked from RZG2L_LOGO_WIDTH/HEIGHT, and
-#              the frame files carry the geometry in their names
-#   0009       play however many frames are installed; frame 0 gets its full
-#              time on screen
-#   0010       declare the hand-over to the kernel in the device tree at boot,
-#              from ft_system_setup() (CONFIG_OF_SYSTEM_SETUP, turned on in
-#              smarc-rzg3l_defconfig), and only for a pipeline that actually
-#              started
-#
-# do_patch applies SRC_URI entries in the order listed and 0003 onwards all edit
-# the driver added by 0002, so keep them in numeric order.
-#
-# Everything is restricted to smarc-rzg3l: the driver programs that board's
-# display path by physical address.
+# Only for smarc-rzg3l: the driver uses the physical addresses of this board.
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
 SRC_URI:append:smarc-rzg3l = " \
@@ -29,17 +10,14 @@ SRC_URI:append:smarc-rzg3l = " \
     file://0002-add-Display-Drivers.patch \
     file://0003-video-rzg2l-load-the-boot-logo-from-the-rootfs-parti.patch \
     file://0004-video-rzg2l-wait-for-two-frames-instead-of-a-flat-se.patch \
-    file://0005-video-rzg2l-select-the-1080p-display-mode.patch \
-    file://0006-video-rzg2l-play-a-multi-frame-intro-from-a-self-adv.patch \
-    file://0007-video-rzg2l-find-the-intro-on-whichever-medium-the-b.patch \
-    file://0008-video-rzg2l-pick-the-display-timing-from-the-logo-re.patch \
-    file://0009-video-rzg2l-play-however-many-frames-are-installed.patch \
-    file://0010-video-rzg2l-declare-the-hand-over-to-the-kernel-from.patch \
+    file://0005-video-rzg2l-play-a-multi-frame-intro-from-a-self-adv.patch \
+    file://0006-video-rzg2l-pick-the-display-timing-from-the-logo-re.patch \
+    file://0007-video-rzg2l-declare-the-hand-over-to-the-kernel-from.patch \
+    file://0008-video-rzg2l-let-the-DU-recover-from-a-PBUF-underflow.patch \
 "
 
-# Immediate assignment: by the time a task runs THISDIR is the recipe's
-# directory rather than this bbappend's, which would point anyone reading the
-# error messages below at the wrong layer.
+# ":=" because THISDIR points to the recipe, not to this layer, when a task
+# runs. The error messages below must name this layer.
 RZG3L_LOGO_SEQUENCE_UBOOT_DIR := "${THISDIR}"
 
 python () {
@@ -59,13 +37,12 @@ python () {
                  "of milliseconds." % rate)
 }
 
-# The display driver takes its resolution and default pace from these macros.
-# Changing any of them changes the do_compile signature, so U-Boot is rebuilt.
+# Passed in EXTRA_OEMAKE, so a change also changes the do_compile signature
+# and U-Boot is rebuilt.
 EXTRA_OEMAKE:append:smarc-rzg3l = ' KCFLAGS="-DRZG2L_LOGO_WIDTH=${RZG3L_LOGO_SEQUENCE_WIDTH} -DRZG2L_LOGO_HEIGHT=${RZG3L_LOGO_SEQUENCE_HEIGHT} -DRZG2L_LOGO_RATE_MS=${RZG3L_LOGO_SEQUENCE_RATE_MS}"'
 
-# Assert the result rather than assume it. A patch can apply around a moved
-# line, and a BSP update can move the driver out from under the whole series,
-# so check the patched source instead of trusting do_patch.
+# A patch can apply next to a moved line, and a BSP update can break the
+# series. Check the patched source instead of trusting do_patch.
 do_configure:prepend:smarc-rzg3l() {
     v="${S}/drivers/video/rzg2l/rzg2l_video.c"
 
@@ -73,43 +50,46 @@ do_configure:prepend:smarc-rzg3l() {
         bbfatal "$v does not exist after do_patch. The display driver from ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR} did not land - re-check 0002-*.patch against this U-Boot revision."
     fi
 
-    # The list of resolutions lives in one place, the driver. Report a missing
-    # timing table here, by name, rather than as an #error deep in do_compile.
+    # Report a missing timing table here, by name, instead of as an #error in
+    # do_compile.
     if ! grep -Eq "^#(el)?if \(RZG2L_LOGO_WIDTH == ${RZG3L_LOGO_SEQUENCE_WIDTH}\) && \(RZG2L_LOGO_HEIGHT == ${RZG3L_LOGO_SEQUENCE_HEIGHT}\)" "$v"; then
-        bbfatal "the U-Boot display driver has no timing table for ${RZG3L_LOGO_SEQUENCE_RESOLUTION} (RZG3L_LOGO_SEQUENCE_RESOLUTION). Add a define_*.h and one #elif to drivers/video/rzg2l/rzg2l_video.c - see README section IV of the layer in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}/../.."
+        bbfatal "the U-Boot display driver has no timing table for ${RZG3L_LOGO_SEQUENCE_RESOLUTION} (RZG3L_LOGO_SEQUENCE_RESOLUTION). Add a define_*.h and one #elif to drivers/video/rzg2l/rzg2l_video.c - see README section III of the layer in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}/../.."
     fi
 
-    # rzg3l-seamless-logo-sequence-frames installs the frames under exactly
-    # this name.
+    # rzg3l-seamless-logo-sequence-frames installs the frames under this name.
     if ! grep -q '"boot/fastlogo_%ux%u_%02u.bin.gz"' "$v"; then
-        bbfatal "U-Boot does not load boot/fastlogo_<W>x<H>_NN.bin.gz, which is where rzg3l-seamless-logo-sequence-frames installs the frames. Re-check 0008-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
+        bbfatal "U-Boot does not load boot/fastlogo_<W>x<H>_NN.bin.gz, which is where rzg3l-seamless-logo-sequence-frames installs the frames. Re-check 0006-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
     fi
 
-    # The boot medium is a run-time decision. The same image boots from eMMC
-    # or from microSD, and a device number compiled into the load command is
-    # silently right on one and silently wrong on the other.
+    # The same image boots from eMMC or microSD. A fixed device number would
+    # be wrong for one of them, without any error.
     if grep -Eq 'ext4load[[:space:]]+mmc[[:space:]]+[0-9]+:' "$v"; then
-        bbfatal "the display driver has a hard-coded MMC device in its ext4load command. It must select the device at run time - see 0007-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
+        bbfatal "the display driver has a hard-coded MMC device in its ext4load command. It must select the device at run time - see 0005-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
     fi
 
-    # Without this the kernel is never told to inherit the pipeline, and
-    # re-initialises the display at its first modeset.
+    # Without the declaration, the kernel resets the display at its first
+    # modeset.
     if ! grep -q '^int ft_system_setup(void \*blob, struct bd_info \*bd)' "$v"; then
-        bbfatal "the display driver does not declare the hand-over to the kernel. Re-check 0010-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
+        bbfatal "the display driver does not declare the hand-over to the kernel. Re-check 0007-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
+    fi
+
+    # Without PB_AUTOCLR, one PBUF underflow leaves the screen magenta until
+    # the next full modeset. The inherited CRTC never gets one.
+    if ! grep -Eq '^[[:space:]]+\{0x10890040,[[:space:]]*0x00010000\}' "$v"; then
+        bbfatal "the display driver does not program DU_MCR1.PB_AUTOCLR (0x10890040 = 0x00010000). Re-check 0011-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR}."
     fi
 }
 
-# ft_system_setup() is only called with CONFIG_OF_SYSTEM_SETUP, and the driver
-# refuses to build without it. Check the generated configuration anyway, so a
-# config fragment from another layer that turns it off is reported by name
-# rather than as an #error from the compiler.
+# The driver does not build without CONFIG_OF_SYSTEM_SETUP. This check names
+# the cause when a fragment from another layer turns it off, instead of an
+# #error from the compiler.
 do_configure:append:smarc-rzg3l() {
     found=0
     for c in ${B}/*/.config; do
         [ -e "$c" ] || continue
         found=1
         if ! grep -q '^CONFIG_OF_SYSTEM_SETUP=y$' "$c"; then
-            bbfatal "$c does not have CONFIG_OF_SYSTEM_SETUP=y, so U-Boot would never declare the boot logo hand-over to the kernel. 0010-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR} turns it on in smarc-rzg3l_defconfig; something later turned it off."
+            bbfatal "$c does not have CONFIG_OF_SYSTEM_SETUP=y, so U-Boot would never declare the boot logo hand-over to the kernel. 0007-*.patch in ${RZG3L_LOGO_SEQUENCE_UBOOT_DIR} turns it on in smarc-rzg3l_defconfig; something later turned it off."
         fi
     done
     [ "$found" = 1 ] || bbfatal "no U-Boot .config under ${B} after do_configure; cannot check CONFIG_OF_SYSTEM_SETUP."

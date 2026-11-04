@@ -1,33 +1,21 @@
 # SPDX-License-Identifier: MIT
 #
-# systemd behaviour that recipe variables cannot reach, because the units
-# involved ship inside the systemd recipe itself and so have no
-# SYSTEMD_AUTO_ENABLE of their own. Both helpers write into
-# ${sysconfdir}/systemd/system, the admin override directory, so nothing here
-# fights the packaged unit files.
-#
-# Hooked onto every image recipe through IMAGE_CLASSES in rz-vlp-fast.conf.
+# These units ship inside the systemd recipe, so SYSTEMD_AUTO_ENABLE cannot
+# reach them. Both helpers write to ${sysconfdir}/systemd/system, the admin
+# override directory, so the packaged unit files stay unchanged.
 
-# ---------------------------------------------------------------------------
-# Masked units
-# ---------------------------------------------------------------------------
-# vconsole-setup   sets VT fonts and keymaps; this board has no VT keyboard
-# serial-getty@ttyS0  belt and braces, SERIAL_CONSOLES only lists ttySC3
-# resolved/networkd/timesyncd/userdbd/network-generator
-#                  the DT profile disables both GbE ports, so there is no
-#                  interface to configure, no NTP server to reach and no name
-#                  to resolve. Together 2.51 service-seconds, and resolved sits
-#                  on the sysinit.target critical chain.
+# vconsole-setup       the board has no VT keyboard.
+# serial-getty@ttyS0   the console is ttySC3.
+# network services     the device tree disables both Ethernet ports. Together
+#                      they take 2.5 s, and resolved is on the sysinit.target
+#                      critical chain.
 #
-# userdbd is masked with its socket so a varlink query cannot activate a masked
-# service; every account in this image is in /etc/passwd, so glibc never needs
-# it. networkd-wait-online is masked because network-online.target.wants still
-# references it and it could only ever fail.
+# userdbd.socket is masked too, so a query cannot start the masked service.
+# All accounts are in /etc/passwd. networkd-wait-online is still wanted by
+# network-online.target and can only fail.
 #
-# Restoring any of these means un-masking the unit *and* restoring the DT node
-# and the DISTRO_FEATURES entry it belongs to. See README section V.
-#
-# Override from a conf file to add or remove units.
+# To restore a unit, also re-enable its device-tree node and DISTRO_FEATURES
+# entry.
 FASTBOOT_MASKED_UNITS ?= "\
     systemd-vconsole-setup.service \
     serial-getty@ttyS0.service \
@@ -48,26 +36,17 @@ fastboot_mask_units() {
     done
 }
 
-# ---------------------------------------------------------------------------
-# systemd-random-seed.service: credit the saved seed
-# ---------------------------------------------------------------------------
-# The service blocks ~1 s inside sysinit.target. It is not slow, it is waiting:
-# after writing the saved seed to /dev/urandom it generates a fresh one to write
-# back, and that blocks in getrandom() until the CRNG initialises. Crediting the
-# seed initialises the CRNG on the spot, so the second half stops blocking.
+# systemd-random-seed waits about 1 s in sysinit.target: it blocks in
+# getrandom() until the CRNG is ready. Crediting the saved seed makes the CRNG
+# ready at once.
 #
-# Safe here because:
-#   - the image ships no seed file, so every board generates its own on its own
-#     first boot and no two devices credit the same bytes;
-#   - "true" rather than "force", so systemd still refuses a seed that is too
-#     short or has permissive modes, degrading to today's behaviour;
-#   - /var/lib is on the persistent rootfs, so the seed survives reboots;
-#   - the refreshed seed is written during load, not only by save at shutdown,
-#     so a hard power cycle still leaves a valid seed behind.
+# This is safe because:
+#   - the image ships no seed, so each board creates its own;
+#   - "true", not "force": systemd still rejects a short or unsafe seed file;
+#   - the seed is on the persistent rootfs and is renewed at every boot, so
+#     a power cut still leaves a valid seed.
 #
-# The first boot after flashing has no seed to credit and still pays the wait.
-# Removing that case needs U-Boot to publish /chosen/rng-seed; 6.12 already
-# credits a bootloader seed unconditionally.
+# The first boot after writing the board has no seed and still waits.
 fastboot_random_seed_credit() {
     seeddir=${IMAGE_ROOTFS}${sysconfdir}/systemd/system/systemd-random-seed.service.d
     install -d $seeddir

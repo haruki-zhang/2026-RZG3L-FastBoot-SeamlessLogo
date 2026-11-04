@@ -1,22 +1,12 @@
 # SPDX-License-Identifier: MIT
 #
-# The frames U-Boot plays at power-on.
+# The frames stay editable BMP files. The build converts them to raw
+# XRGB8888, gzip compressed, as /boot/fastlogo_<W>x<H>_NN.bin.gz.
+# XRGB8888 is the frame buffer format, so U-Boot only has to unpack, not parse.
+# Logo artwork is mostly flat colour, so gzip keeps the load short.
 #
-# The artwork is kept as editable BMP files and converted at build time into
-# what the U-Boot display driver loads: raw XRGB8888, gzip compressed, one file
-# per frame, installed as /boot/fastlogo_<W>x<H>_NN.bin.gz. Raw XRGB8888 is the
-# frame buffer's own format, so U-Boot inflates each frame straight into the
-# reserved region with no image parsing; the compression keeps the read short
-# because boot artwork is mostly flat colour.
-#
-# U-Boot plays frames 00, 01, ... until the next file is missing, so the number
-# of frames is simply the length of RZG3L_LOGO_SEQUENCE_FRAMES. To use your own
-# artwork, set in local.conf
-#
-#   RZG3L_LOGO_SEQUENCE_FRAMES = "/path/to/a.bmp /path/to/b.bmp"
-#
-# or bbappend this recipe with FILESEXTRAPATHS:prepend and list plain file
-# names. See the layer README, section IV.
+# U-Boot plays frames 00, 01, ... until a file is missing. See the guide,
+# section 4.3, for your own frames.
 
 SUMMARY = "Boot logo frames for the RZ/G3L U-Boot display driver"
 DESCRIPTION = "Converts the boot logo artwork into gzip-compressed raw \
@@ -29,34 +19,32 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-# One entry per frame. An absolute path is fetched from the build host as is;
-# anything else is looked up in FILESPATH.
+# An absolute path is taken from the build host, a file name from FILESPATH.
 SRC_URI = "${@' '.join('file://' + f for f in (d.getVar('RZG3L_LOGO_SEQUENCE_FRAMES') or '').split())}"
 
-# Where U-Boot reads them from: /boot on the rootfs partition, next to Image
-# and the device tree.
+# U-Boot reads /boot on the rootfs partition.
 RZG3L_LOGO_SEQUENCE_BOOTDIR = "/boot"
 
 S = "${WORKDIR}"
 
-# The artwork belongs to this board's display, not merely to its architecture.
+# The frames depend on the display of this board, not only on the
+# architecture.
 COMPATIBLE_MACHINE = "smarc-rzg3l"
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-# Nothing is compiled: the conversion runs inside bitbake's own Python, so this
-# recipe needs no toolchain at all.
+# The conversion runs in bitbake's Python, so no toolchain is needed.
 INHIBIT_DEFAULT_DEPS = "1"
 do_configure[noexec] = "1"
 
-# U-Boot's frame slots run from 0x58000000 up to its display list headers at
-# 0x5f000000 (drivers/video/rzg2l).
+# The U-Boot frame slots run from 0x58000000 to the display list headers at
+# 0x5f000000.
 RZG3L_LOGO_SEQUENCE_SLOT_BYTES = "117440512"
 
 python () {
     import re
 
-    # --- Layers carrying the same U-Boot and kernel series. Together, every
-    #     patch would be offered twice and do_patch fails on the second copy.
+    # Both layers carry the same U-Boot and kernel patches. do_patch would
+    # fail on the second copy.
     collections = (d.getVar('BBFILE_COLLECTIONS') or '').split()
     for other in ('meta-rzg3l-seamless-logo-still',):
         if other in collections:
@@ -112,14 +100,13 @@ python do_compile() {
         if bpp not in (24, 32):
             bb.fatal("%s is %d bpp; only uncompressed 24 or 32 bpp BMP is "
                      "supported" % (path, bpp))
-        # BI_RGB, or BI_BITFIELDS for 32 bpp files whose masks say B,G,R,X in
-        # memory - which is what most tools write for 32 bpp.
+        # Also accept BI_BITFIELDS with B,G,R,X masks: most tools write 32 bpp
+        # files that way.
         if compression not in (0, 3) or (compression == 3 and bpp != 32):
             bb.fatal("%s is compressed (BI_* %d); only BI_RGB is supported"
                      % (path, compression))
         if compression == 3:
-            # The masks follow a 40 byte header, and sit at the same offsets
-            # inside the V4/V5 headers.
+            # The masks follow the 40-byte header, also in V4/V5 headers.
             masks = struct.unpack_from('<III', data, 54)
             if masks != (0x00ff0000, 0x0000ff00, 0x000000ff):
                 bb.fatal("%s uses channel masks R=%08x G=%08x B=%08x; only "
@@ -172,8 +159,7 @@ python do_compile() {
 
         width, height, pixels = bmp_to_xrgb8888(src)
 
-        # U-Boot drives exactly one mode, and a frame of any other size would
-        # be scanned out with the wrong stride.
+        # A frame of another size would be shown with the wrong stride.
         if '%dx%d' % (width, height) != res:
             bb.fatal("%s is %dx%d but RZG3L_LOGO_SEQUENCE_RESOLUTION is %s; every "
                      "frame must be drawn at the output resolution"
@@ -186,8 +172,8 @@ python do_compile() {
                                fileobj=raw, mtime=0) as gz:
                 gz.write(pixels)
 
-        # U-Boot rejects a frame that does not inflate to exactly one slot.
-        # Catch it here rather than at the far end of a flash-and-boot cycle.
+        # U-Boot rejects a frame that is not exactly one slot. Find it here,
+        # not after writing the board.
         expected = width * height * 4
         with gzip.open(dst, 'rb') as gz:
             actual = len(gz.read())
@@ -205,8 +191,8 @@ do_install() {
     install -m 0644 ${B}/frames/fastlogo_${RZG3L_LOGO_SEQUENCE_RESOLUTION}_*.bin.gz \
         ${D}${RZG3L_LOGO_SEQUENCE_BOOTDIR}/
 
-    # U-Boot stops at the first missing number, so a gap would silently cut
-    # the sequence short.
+    # U-Boot stops at the first missing number, so a gap would cut the
+    # sequence short without an error.
     n=0
     for name in ${RZG3L_LOGO_SEQUENCE_FRAMES}; do
         f=$(printf '%s/fastlogo_%s_%02d.bin.gz' ${D}${RZG3L_LOGO_SEQUENCE_BOOTDIR} ${RZG3L_LOGO_SEQUENCE_RESOLUTION} $n)
@@ -217,8 +203,7 @@ do_install() {
 
 FILES:${PN} = "${RZG3L_LOGO_SEQUENCE_BOOTDIR}/fastlogo_*.bin.gz"
 
-# Read straight off the block device by the bootloader: nothing here is ELF, so
-# there is nothing to strip, debug-split or resolve shared libraries for.
+# Not ELF: nothing to strip, split or check for libraries.
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 EXCLUDE_FROM_SHLIBS = "1"

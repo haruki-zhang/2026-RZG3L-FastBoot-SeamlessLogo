@@ -1,0 +1,501 @@
+From cf7162a6b0fc12809277ef1ae9fdef7bce2b953c Mon Sep 17 00:00:00 2001
+From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
+Date: Wed, 9 Sep 2026 12:00:00 +0900
+Subject: [PATCH] video: rzg2l: play a multi-frame intro from a self-advancing
+ display list chain
+
+The VSPD can play frames from a self-advancing display list chain,
+without the CPU and on through the kernel boot. Play the frames found in
+/boot of the boot medium once and hold the last one, so Linux takes over
+from a known frame. logo_rate_ms, logo_frames and logo_mmc_dev override
+the defaults without a new fip.
+
+Upstream-Status: Inappropriate [RZ/G3L boot logo, board specific]
+---
+ drivers/video/rzg2l/rzg2l_video.c | 366 +++++++++++++++++++++++++-----
+ drivers/video/rzg2l/rzg2l_video.h |   2 +-
+ 2 files changed, 304 insertions(+), 64 deletions(-)
+
+diff --git a/drivers/video/rzg2l/rzg2l_video.c b/drivers/video/rzg2l/rzg2l_video.c
+index 3bbf60f972..3dea63c774 100644
+--- a/drivers/video/rzg2l/rzg2l_video.c
++++ b/drivers/video/rzg2l/rzg2l_video.c
+@@ -1,6 +1,9 @@
+ #include "rzg2l_video.h"
+ #include <common.h>
+ #include <command.h>
++#include <env.h>
++#include <fs.h>
++#include <linux/errno.h>
+ 
+ // PFC
+ #define PFC_BASE	0x11030000
+@@ -32,7 +35,12 @@
+ #define	LVDS_720P		2
+ #define PARALLEL_RGB_720P	3
+ 
+-#define	DISPLAY_MODE MIPI_DSI_720P
++/*
++ * 1080p, because the frames of this layer are 1920x1080. This must match
++ * define_1080p.h and the CEA VIC the kernel pins the connector to. Otherwise
++ * the kernel reports a mode that the hardware does not output.
++ */
++#define	DISPLAY_MODE MIPI_DSI_1080P
+ 
+ #if (DISPLAY_MODE == MIPI_DSI_1080P)
+ #include "define_1080p.h"
+@@ -48,6 +56,65 @@
+ 
+ #define USE_DISPLAY_LIST
+ 
++/*
++ * ------------------------------------------------------------------------
++ * Boot logo intro
++ * ------------------------------------------------------------------------
++ * The VSPD follows a chain of display list headers by itself (pNext_header,
++ * next_frame_auto_start). Each header points to a different frame, so the
++ * intro plays without the CPU, also during the kernel boot.
++ *
++ * The VSPD uses one header per output frame. A frame is held by repeating its
++ * header.
++ *
++ * The last header points to itself, so the intro stops on its last frame. A
++ * Linux application then takes over from a known frame, however long the
++ * kernel boot takes.
++ */
++#define LOGO_LOAD_ADDR		0x48000000
++
++#if (DISPLAY_MODE == MIPI_DSI_1080P)
++#define LOGO_FILE_PREFIX	"boot_img_1080p"
++#else
++#define LOGO_FILE_PREFIX	"boot_img_720p"
++#endif
++
++/* CEA VIC 16 and VIC 4 are both 60 Hz. */
++#define LOGO_REFRESH_HZ		60
++
++/*
++ * Time per frame, from RZG3L_LOGO_SEQUENCE_RATE_MS. "logo_rate_ms" in the
++ * environment overrides it, so the pace can be tuned without writing fip
++ * again.
++ */
++#ifndef RZG2L_LOGO_RATE_MS
++#define RZG2L_LOGO_RATE_MS	1000
++#endif
++#define LOGO_RATE_MS_DEFAULT	RZG2L_LOGO_RATE_MS
++
++/*
++ * The frame count is not compiled in. The intro plays frames 00, 01, ... until
++ * a file is missing, so a new number of frames only changes the rootfs.
++ * "logo_frames" in the environment can limit the count.
++ */
++
++/* Frame buffers run from LCD_SRCM_ADDR up to the display list header area. */
++#define LOGO_FRAMES_MAX \
++	((unsigned int)((DISPLAY_LIST_HEADER_0 - LCD_SRCM_ADDR) / LCD_SRCM_ADDR_OFFS))
++
++/*
++ * The header area ends at DISPLAY_LIST_0. It is 8 MiB, far more than any intro
++ * needs, but the limit is still checked.
++ */
++#define LOGO_HEADERS_MAX \
++	((unsigned int)((DISPLAY_LIST_0 - DISPLAY_LIST_HEADER_0) / sizeof(display_header_t)))
++
++#define LOGO_RATE_MS_MIN	(1000 / LOGO_REFRESH_HZ)
++#define LOGO_RATE_MS_MAX	10000
++
++/* "logo_mmc_dev" unset: work the boot medium out at run time. */
++#define LOGO_MMC_DEV_AUTO	(~0UL)
++
+ static void rzg2l_cpg_init(void);
+ static void adv7535_init(void);
+ static void adv7535_deinit(void);
+@@ -59,12 +126,21 @@ static void rzg2l_vcpd_init(void);
+ static void rzg2l_vcpd_dl_init(void);
+ static void rzg2l_lcdc_start(void);
+ static void rzg2l_wait_frames(unsigned int frames, unsigned int timeout_ms);
++static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats,
++				   unsigned long *rate_ms, bool *capped);
++static unsigned int rzg2l_logo_mmc_dev(void);
++static int rzg2l_logo_load_frame(unsigned int dev, unsigned int index);
++static void rzg2l_logo_build_chain(unsigned int frames, unsigned int first,
++				   unsigned int repeats);
+ 
+ static void rzg2ul_adv7513_init(void);
+ static int adv7513_i2c_reg_write(struct udevice *dev, uint addr, uint mask, uint data);
+ static int adv7513_i2c_reg_read(struct udevice *dev, uint8_t addr, uint8_t *data);
+ 
+ int rzg2l_video_init(void){
++	unsigned int frames, repeats, first, i, dev;
++	unsigned long rate, lit, elapsed;
++	bool capped, blank = false;
+ 	int ret;
+ 
+ 	// adv7535_deinit();
+@@ -99,17 +175,29 @@ int rzg2l_video_init(void){
+ 	adv7535_init();
+ #endif
+ 
++	rzg2l_logo_read_config(&frames, &repeats, &rate, &capped);
++
+ 	/*
+-	 * From /boot on partition 2, next to Image and the device tree.
+-	 * Partition 1 is vfat, which ext4load cannot read.
++	 * Only frame 0 is loaded before the pipeline starts. The other frames
++	 * load while it is on screen, so the first picture is not delayed.
++	 *
++	 * Partition 1 is vfat, which ext4load cannot read, so the frames are
++	 * in /boot on partition 2.
+ 	 */
+-#if (DISPLAY_MODE == MIPI_DSI_1080P)
+-	ret = run_command("ext4load mmc 0:2 0x48000000 boot/boot_img_1080p.bin.gz", 0);
+-#else
+-	ret = run_command("ext4load mmc 0:2 0x48000000 boot/boot_img_720p.bin.gz", 0);
+-#endif
+-	if (!ret)
+-		ret = run_command("unzip 0x48000000 0x58000000", 0);
++	dev = rzg2l_logo_mmc_dev();
++
++	ret = rzg2l_logo_load_frame(dev, 0);
++	if (ret) {
++		/*
++		 * The detected device is the boot medium. It is not always the
++		 * medium with the frames, for example with an old image on the
++		 * other medium. One retry costs a few ms.
++		 */
++		printf("fast-logo: no intro on mmc %u:2, trying mmc %u:2\n",
++		       dev, dev ^ 1u);
++		dev ^= 1u;
++		ret = rzg2l_logo_load_frame(dev, 0);
++	}
+ 
+ 	if (ret) {
+ 		/*
+@@ -120,6 +208,10 @@ int rzg2l_video_init(void){
+ 		printf("fast-logo: no splash image, showing a blank screen\n");
+ 		memset((void *)(unsigned long)LCD_SRCM_ADDR, 0,
+ 		       LCD_SRCM_ADDR_OFFS);
++		frames = 1;
++		blank = true;
++	} else {
++		printf("fast-logo: intro from mmc %u:2\n", dev);
+ 	}
+ 
+ 	dcache_disable();
+@@ -137,6 +229,7 @@ int rzg2l_video_init(void){
+ 	dcache_enable();
+ 
+ 	rzg2l_lcdc_start();
++	lit = get_timer(0);
+ 
+ 	/*
+ 	 * rzg2l_lcdc_start() only waits for the pipeline to start. Wait for
+@@ -144,9 +237,139 @@ int rzg2l_video_init(void){
+ 	 */
+ 	rzg2l_wait_frames(2, 100);
+ 
++#ifdef	USE_DISPLAY_LIST
++	/*
++	 * Frame 0 is on screen. A missing file is the normal end of the intro.
++	 * A frame that exists but fails to load also ends it. A shorter intro
++	 * is better than none.
++	 */
++	for (i = 1; i < frames; i++) {
++		ret = rzg2l_logo_load_frame(dev, i);
++		if (ret == -ENOENT && !capped)
++			break;
++		if (ret) {
++			printf("fast-logo: frame %u did not load, intro cut to %u frame(s)\n",
++			       i, i);
++			break;
++		}
++	}
++	frames = i;
++
++	/*
++	 * Frame 0 has been on screen while the others loaded. Hold it for the
++	 * rest of its time, so that it is shown as long as the other frames.
++	 */
++	elapsed = get_timer(lit);
++	first = elapsed < rate ?
++		(unsigned int)(((rate - elapsed) * LOGO_REFRESH_HZ) / 1000) : 0;
++
++	if (!blank)
++		printf("fast-logo: intro is %u frame(s)\n", frames);
++
++	if (frames > 1)
++		rzg2l_logo_build_chain(frames, first, repeats);
++#endif	/* USE_DISPLAY_LIST */
++
+ 	return 0;
+ }
+ 
++/*
++ * Read from the environment, so the intro can be tuned without writing fip
++ * again. Without "logo_frames", the limit is the room in the reserved area.
++ */
++static void rzg2l_logo_read_config(unsigned int *frames, unsigned int *repeats,
++				   unsigned long *rate_ms, bool *capped)
++{
++	unsigned long n, rate;
++
++	*capped = env_get("logo_frames") != NULL;
++	n = env_get_ulong("logo_frames", 10, LOGO_FRAMES_MAX);
++	if (n < 1)
++		n = 1;
++	if (n > LOGO_FRAMES_MAX)
++		n = LOGO_FRAMES_MAX;
++
++	rate = env_get_ulong("logo_rate_ms", 10, LOGO_RATE_MS_DEFAULT);
++	if (rate < LOGO_RATE_MS_MIN)
++		rate = LOGO_RATE_MS_MIN;
++	if (rate > LOGO_RATE_MS_MAX)
++		rate = LOGO_RATE_MS_MAX;
++
++	*frames = (unsigned int)n;
++	*rate_ms = rate;
++	*repeats = (unsigned int)((rate * LOGO_REFRESH_HZ) / 1000);
++	if (*repeats < 1)
++		*repeats = 1;
++
++	/*
++	 * At most one header per output frame, frame 0 included, plus the
++	 * configuration header. Trim the intro instead of running past the
++	 * header area.
++	 */
++	while (*frames > 1 &&
++	       1 + (*frames) * (*repeats) > LOGO_HEADERS_MAX)
++		(*frames)--;
++
++	if (*capped)
++		printf("fast-logo: up to %u frame(s), %lu ms per frame\n",
++		       *frames, rate);
++	else
++		printf("fast-logo: %lu ms per frame\n", rate);
++}
++
++/*
++ * Which MMC device has the intro frames.
++ *
++ * The same image boots from eMMC or microSD. Use the rule of the BSP
++ * bootcmd_check: a card in slot 1 wins, eMMC is the fallback.
++ *
++ *   if mmc dev 1; then run sd1load; else run emmcload; fi
++ *
++ * Not mmc_get_env_dev(): the environment is read from eMMC even when the
++ * rootfs is on the SD card.
++ *
++ * Called once per boot. Probing per frame would print the device switch for
++ * every frame.
++ */
++static unsigned int rzg2l_logo_mmc_dev(void)
++{
++	unsigned long dev = env_get_ulong("logo_mmc_dev", 10, LOGO_MMC_DEV_AUTO);
++
++	if (dev != LOGO_MMC_DEV_AUTO)
++		return (unsigned int)dev;
++
++	return run_command("mmc dev 1", 0) == 0 ? 1u : 0u;
++}
++
++/*
++ * Load one gzip-compressed XRGB8888 frame into its slot in the reserved area.
++ *
++ * A missing file returns -ENOENT without a message. It is the normal end of
++ * the intro, and ext4load would print an error on every boot.
++ */
++static int rzg2l_logo_load_frame(unsigned int dev, unsigned int index)
++{
++	char part[16], path[64], cmd[128];
++	int ret;
++
++	snprintf(part, sizeof(part), "%u:2", dev);
++	snprintf(path, sizeof(path), "boot/" LOGO_FILE_PREFIX "_%02u.bin.gz",
++		 index);
++	if (!file_exists("mmc", part, path, FS_TYPE_EXT))
++		return -ENOENT;
++
++	snprintf(cmd, sizeof(cmd), "ext4load mmc %s 0x%08x %s", part,
++		 LOGO_LOAD_ADDR, path);
++	ret = run_command(cmd, 0);
++	if (ret)
++		return ret;
++
++	snprintf(cmd, sizeof(cmd), "unzip 0x%08x 0x%08lx", LOGO_LOAD_ADDR,
++		 (unsigned long)LCD_SRCM_ADDR +
++		 (unsigned long)LCD_SRCM_ADDR_OFFS * index);
++	return run_command(cmd, 0);
++}
++
+ static const uint32_t cpg_register_values[][2] = {//0x11010000  //step1
+ #if (DISPLAY_MODE == PARALLEL_RGB_720P)
+ 	{0x11010084, 0x104C4000}, // CPG_PLL7_CLK1
+@@ -862,85 +1085,102 @@ static const display_body_t dl_init[] = {
+ 	//{VSPD_VI6_LIF0_PADLN_SIZE,	((uint32_t)0)},
+ };
+ 
+-static display_header_t *dl_headers[3];
+-static display_body_t *dl_body[3];
++/*
++ * Header 0 configures the pipeline and shows frame 0. Headers 1.. are the
++ * intro chain. All headers that repeat a frame share the body of that frame.
++ */
++static display_header_t * const dl_headers =
++	(display_header_t *)(unsigned long)DISPLAY_LIST_HEADER_0;
++static display_body_t * const dl_body_init =
++	(display_body_t *)(unsigned long)DISPLAY_LIST_0;
++static display_body_t * const dl_body_frame =
++	(display_body_t *)(unsigned long)DISPLAY_LIST_1;
+ 
+ static void rzg2l_vcpd_dl_init(void)
+ {
+-	int i;
++	unsigned int i;
+ 	display_header_t *header;
+ 	display_body_t *body;
+ 
+ 	printf("VCPD Init for DL\r\n");
+ 	rzg2l_registers_set(vcpd_dl_register_values,ARRAY_SIZE(vcpd_dl_register_values));
+ 
+-	/* Init DL */
+-	dl_headers[0] = (display_header_t *)DISPLAY_LIST_HEADER_0;
+-	dl_headers[1] = (display_header_t *)DISPLAY_LIST_HEADER_1;
+-	dl_headers[2] = (display_header_t *)DISPLAY_LIST_HEADER_2;
+-	for (i = 0; i < 3; i++) {
+-		memset(dl_headers[i], 0x00, sizeof (display_header_t));
+-	}
+-	dl_body[0] = (display_body_t *)DISPLAY_LIST_0;
+-	dl_body[1] = (display_body_t *)DISPLAY_LIST_1;
+-	dl_body[2] = (display_body_t *)DISPLAY_LIST_2;
+-
+-	/* Setup DL bodies */
+-	body = dl_body[0];
++	body = dl_body_init;
+ 	for (i = 0; i < (sizeof dl_init)/(sizeof (display_body_t)); i++) {
+ 		body->address = dl_init[i].address;
+ 		body->data = dl_init[i].data;
+ 		body++;
+ 	}
+-	body = dl_body[1];
+-	body->address = VSPD_VI6_RPF0_SRCM_ADDR_Y;
+-	body->data = LCD_SRCM_ADDR;
+-	body = dl_body[2];
+-	body->address = VSPD_VI6_RPF0_SRCM_ADDR_Y;
+-	body->data = LCD_SRCM_ADDR;
+-
+-	/* Setup DL headers */
+-	header = dl_headers[0];
+-	header->num_list = 0;
+-	header->list[0].num_bytes = (sizeof dl_init);
+-	header->list[0].pList = (uint32_t)dl_body[0];
+-	header->pNext_header = DISPLAY_LIST_HEADER_1;
+-	header->flags = 1;
+-
+-	header = dl_headers[1];
+-	header->num_list = 0;
+-	header->list[0].num_bytes = 1 * (sizeof (display_body_t));
+-	header->list[0].pList = (uint32_t)dl_body[1];
+-	header->pNext_header = DISPLAY_LIST_HEADER_1;
+-	header->flags = 1;
+ 
+-	header = dl_headers[2];
++	/*
++	 * Header 0 points to itself, so frame 0 stays while the other frames
++	 * load. Arming the chain is one store to its pNext_header. The VSPD
++	 * reads it at the next frame, so no register write is needed and
++	 * nothing glitches.
++	 */
++	header = &dl_headers[0];
++	memset(header, 0x00, sizeof (display_header_t));
+ 	header->num_list = 0;
+-	header->list[0].num_bytes = 1 * (sizeof (display_body_t));
+-	header->list[0].pList = (uint32_t)dl_body[2];
+-	header->pNext_header = DISPLAY_LIST_HEADER_2;
++	header->list[0].num_bytes = (sizeof dl_init);
++	header->list[0].pList = (uint32_t)(unsigned long)dl_body_init;
++	header->pNext_header = (uint32_t)(unsigned long)&dl_headers[0];
+ 	header->flags = 1;
+ }
+ 
+-void rzg2l_video_update(void)
++/*
++ * Build the intro chain and arm it.
++ *
++ * Frame 0 is already on screen through header 0. It gets @first more headers
++ * to fill its time.
++ *
++ * The VSPD reads these structures from DDR, so they are written with the
++ * D-cache off. Turning it off also flushes the frames loaded before.
++ */
++static void rzg2l_logo_build_chain(unsigned int frames, unsigned int first,
++				   unsigned int repeats)
+ {
+-	display_header_t *header;
+-	display_body_t *body;
+-	static int count = 0;
++	unsigned int n = 1 + first + (frames - 1) * repeats;
++	unsigned int i, k, r;
+ 
+-	count++;
+-	if (count >= LCD_SRCM_FB_NUM)
+-		return;
++	dcache_disable();
+ 
+-	header = ((count & 1) == 0) ? dl_headers[1]: dl_headers[2];
+-	body = (display_body_t *)header->list[0].pList;
++	for (k = 0; k < frames; k++) {
++		dl_body_frame[k].address = VSPD_VI6_RPF0_SRCM_ADDR_Y;
++		dl_body_frame[k].data = LCD_SRCM_ADDR + LCD_SRCM_ADDR_OFFS * k;
++	}
+ 
+-	dcache_disable();
++	i = 1;
++	for (k = 0; k < frames; k++) {
++		for (r = 0; r < (k ? repeats : first); r++, i++) {
++			display_header_t *header = &dl_headers[i];
++
++			memset(header, 0x00, sizeof (display_header_t));
++			header->num_list = 0;
++			header->list[0].num_bytes = sizeof (display_body_t);
++			header->list[0].pList =
++				(uint32_t)(unsigned long)&dl_body_frame[k];
++			header->pNext_header = (uint32_t)(unsigned long)
++				&dl_headers[(i + 1 < n) ? i + 1 : i];
++			header->flags = 1;
++		}
++	}
+ 
+-	body->data = LCD_SRCM_ADDR + LCD_SRCM_ADDR_OFFS * count;
+-	reg_write(VSPD_VI6_DL_HDR_ADDR0, (uint32_t)header);
++	/* Arm. From here the animation runs without the CPU. */
++	dl_headers[0].pNext_header = (uint32_t)(unsigned long)&dl_headers[1];
+ 
+ 	dcache_enable();
++
++	printf("fast-logo: intro armed, %u headers, parks on frame %u\n",
++	       n, frames - 1);
++}
++
++/*
++ * Kept because cmd/booti.c and common/autoboot.c call it. The VSPD walks the
++ * intro chain by itself, also after U-Boot. Stepping frames from here would
++ * fight it, so this does nothing.
++ */
++void rzg2l_video_update(void)
++{
+ }
+ 
+ /* Start LCDC */
+diff --git a/drivers/video/rzg2l/rzg2l_video.h b/drivers/video/rzg2l/rzg2l_video.h
+index e422770d0a..9943569cd3 100644
+--- a/drivers/video/rzg2l/rzg2l_video.h
++++ b/drivers/video/rzg2l/rzg2l_video.h
+@@ -269,7 +269,7 @@ typedef struct _display_header {
+ /* Frame buffer color depth / 8 [byte/pix] */
+ #define DISPLAY_FB_BYTE_PER_PIX		(4)
+ /* Number of Frame buffer */
+-#define LCD_SRCM_FB_NUM			(1)
++/* Not a constant: the frame count is decided at run time. */
+ 
+ int rzg2l_video_init(void);
+ void rzg2l_video_update(void);

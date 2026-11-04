@@ -4,38 +4,19 @@
  *
  * Copyright (c) Renesas Electronics Corporation
  *
- * Shows a list of BMP images on the display through DRM/KMS, one after the
- * other at a fixed interval, and keeps the last one on screen until another
- * program - normally the compositor - replaces it.
+ * Shows BMP images through DRM/KMS at a fixed interval and keeps the last one
+ * on screen until the compositor replaces it. Works with or without
+ * meta-rzg3l-seamless-logo-sequence.
  *
- * It is a reference for an application that continues a boot logo in Linux,
- * and deliberately generic: it runs on a stock BSP image as well as on one
- * built with meta-rzg3l-seamless-logo-sequence, where U-Boot has left the
- * display running and the kernel inherits it.  Nothing here depends on that
- * layer.
+ * Closing the DRM device would take our framebuffer off the display, and the
+ * screen would stay dark until the compositor commits. So after the last image
+ * the program drops DRM master but keeps the device open. It exits once
+ * another framebuffer is on the CRTC.
  *
- *   - The mode is chosen to suit the images: the connector's mode matching
- *     the first image, else its preferred mode.  With the layer the connector
- *     offers exactly one mode anyway, the one U-Boot drives.
- *   - An image that does not match the mode is centred, with what does not
- *     fit cropped and the rest black, or with --fit=scale scaled to fit.
- *   - BMP files may be 24 or 32 bpp, bottom-up or top-down, any width.
- *   - The dumb buffer is written row by row at its own pitch.
- *
- * Holding the last image: exiting would make the kernel take our framebuffer
- * off the display, leaving the screen dark until the compositor commits.
- * Instead, after the last image the program drops DRM master - which lets the
- * compositor become master - but keeps the device open, so the framebuffer
- * stays on screen.  It then watches the CRTC and exits once something else's
- * framebuffer is being scanned out; at that point closing the device no
- * longer touches the display.
- *
- * DRM master: the first process to open the DRM device becomes master, and
- * only the master may set modes.  The unit file orders this program before
- * weston.service with Type=notify, and the program reports readiness only
- * once it has dropped master, so weston starts right after the last image
- * instead of racing the first one.  Every failure path reports readiness
- * too: a boot logo must never hold the compositor back.
+ * Only the DRM master can set a mode, so the compositor must wait. systemd
+ * starts it when this program reports readiness (Type=notify), after dropping
+ * master. Every exit path reports readiness, so a failure never holds the
+ * compositor back.
  */
 
 #include <errno.h>
@@ -68,10 +49,10 @@
 #define DEFAULT_DEVICE_WAIT_MS	3000u
 /* Give up holding the last image after this long; 0 means never. */
 #define DEFAULT_HOLD_MAX_MS	60000u
-/* How often to look whether someone else has taken the display over. */
+/* How often to check whether the compositor has taken over. */
 #define HOLD_POLL_MS		100u
 
-/* Refuse absurd BMP headers before multiplying them together. */
+/* Bounds the header values, so width * height cannot overflow. */
 #define MAX_IMAGE_DIM		8192u
 
 enum fit {
@@ -112,10 +93,6 @@ struct display {
 
 static volatile sig_atomic_t stop;
 
-/* -------------------------------------------------------------------------
- * Helpers
- * ------------------------------------------------------------------------- */
-
 static void logmsg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 static void logmsg(const char *fmt, ...)
@@ -137,7 +114,6 @@ static uint64_t now_ms(void)
 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
-/* Sleep until CLOCK_MONOTONIC reaches @deadline_ms, or a signal asks to stop. */
 static void sleep_until(uint64_t deadline_ms)
 {
 	struct timespec ts;
@@ -167,8 +143,8 @@ static uint32_t rd32(const uint8_t *p)
 }
 
 /*
- * Report readiness to systemd (Type=notify), without linking libsystemd.
- * Idempotent: it is called from every exit path.
+ * sd_notify() without linking libsystemd. Sends only once, because every exit
+ * path calls it.
  */
 static void notify_ready(void)
 {
@@ -208,14 +184,7 @@ static void notify_ready(void)
 	close(fd);
 }
 
-/* -------------------------------------------------------------------------
- * BMP loading
- * ------------------------------------------------------------------------- */
-
-/*
- * Load an uncompressed 24 or 32 bpp BMP into XRGB8888.  32 bpp files may use
- * BI_BITFIELDS as long as the masks describe that same layout.
- */
+/* Uncompressed 24 or 32 bpp BMP. BI_BITFIELDS only with the XRGB8888 masks. */
 static int load_bmp(const char *path, struct image *img)
 {
 	uint8_t *data = NULL;
@@ -333,18 +302,13 @@ static void free_image(struct image *img)
 	img->pixels = NULL;
 }
 
-/* -------------------------------------------------------------------------
- * Drawing
- * ------------------------------------------------------------------------- */
-
-/* Fill @buf, @fbw x @fbh pixels at the buffer's pitch, with @img placed per @fit. */
+/* Row by row at buf->pitch: the pitch is not always fbw * 4. */
 static void draw_image(const struct buffer *buf, uint32_t fbw, uint32_t fbh,
 		       const struct image *img, enum fit fit)
 {
 	uint32_t x, y;
 
 	if (fit == FIT_SCALE && (img->width != fbw || img->height != fbh)) {
-		/* The largest size that fits, keeping the aspect ratio. */
 		uint32_t dw = fbw;
 		uint32_t dh = (uint32_t)((uint64_t)img->height * fbw / img->width);
 		uint32_t x0, y0;
@@ -369,7 +333,6 @@ static void draw_image(const struct buffer *buf, uint32_t fbw, uint32_t fbh,
 				memset(row, 0, (size_t)fbw * 4u);
 				continue;
 			}
-			/* Nearest neighbour. */
 			src = img->pixels +
 			      (size_t)((uint64_t)(y - y0) * img->height / dh) * img->width;
 			for (x = 0; x < fbw; x++)
@@ -379,7 +342,7 @@ static void draw_image(const struct buffer *buf, uint32_t fbw, uint32_t fbh,
 		return;
 	}
 
-	/* 1:1 and centred.  Offsets are negative when the image is larger. */
+	/* Offsets are negative when the image is larger than the mode. */
 	{
 		int64_t x0 = ((int64_t)fbw - img->width) / 2;
 		int64_t y0 = ((int64_t)fbh - img->height) / 2;
@@ -405,15 +368,9 @@ static void draw_image(const struct buffer *buf, uint32_t fbw, uint32_t fbh,
 	}
 }
 
-/* -------------------------------------------------------------------------
- * DRM/KMS
- * ------------------------------------------------------------------------- */
-
 /*
- * Open the DRM device driven by @module, waiting up to @wait_ms for it to
- * appear.  The nodes are opened directly rather than through drmOpen(): run
- * as root before the device exists, drmOpen() creates the missing
- * /dev/dri/card* nodes itself, leaving stale ones behind in /dev.
+ * Not drmOpen(): run as root before the device exists, it creates the missing
+ * /dev/dri/card* nodes itself and leaves stale ones behind.
  */
 static int open_drm(const char *module, unsigned int wait_ms)
 {
@@ -445,11 +402,7 @@ static int open_drm(const char *module, unsigned int wait_ms)
 	}
 }
 
-/*
- * Pick a mode.  A requested size (the -m option, or the first image) wins if
- * the connector offers it - the sink's preferred timing first, then the
- * highest refresh.  Otherwise the preferred mode, otherwise the first.
- */
+/* The requested size if the connector offers it, else the preferred mode. */
 static const drmModeModeInfo *pick_mode(const drmModeConnector *conn,
 					uint32_t want_w, uint32_t want_h)
 {
@@ -482,7 +435,7 @@ static const drmModeModeInfo *pick_mode(const drmModeConnector *conn,
 	return &conn->modes[0];
 }
 
-/* The CRTC to drive @conn with: the one it is on now, else the first possible. */
+/* Keep the CRTC already in use, so an inherited display is not moved. */
 static uint32_t pick_crtc(int fd, const drmModeRes *res, const drmModeConnector *conn)
 {
 	drmModeEncoder *enc;
@@ -515,7 +468,6 @@ static uint32_t pick_crtc(int fd, const drmModeRes *res, const drmModeConnector 
 	return crtc;
 }
 
-/* First connected connector with modes, its CRTC and a mode for @want_w x @want_h. */
 static int setup_output(struct display *disp, uint32_t want_w, uint32_t want_h)
 {
 	drmModeRes *res;
@@ -568,7 +520,7 @@ static int create_buffer(int fd, uint32_t w, uint32_t h, struct buffer *buf)
 	buf->pitch = create.pitch;
 	buf->size = create.size;
 
-	/* XRGB8888: depth 24, 32 bits per pixel. */
+	/* depth 24, 32 bpp: XRGB8888. */
 	if (drmModeAddFB(fd, w, h, 24, 32, buf->pitch, buf->handle, &buf->fb_id)) {
 		logmsg("drmModeAddFB: %s", strerror(errno));
 		goto err_destroy;
@@ -603,7 +555,6 @@ static void on_page_flip(int fd, unsigned int seq, unsigned int sec,
 	*(bool *)data = true;
 }
 
-/* Flip to @fb_id and wait until it is on screen. */
 static int page_flip(struct display *disp, uint32_t fb_id)
 {
 	drmEventContext ev = {
@@ -620,7 +571,7 @@ static int page_flip(struct display *disp, uint32_t fb_id)
 		return -1;
 	}
 
-	/* A flip completes at the next vblank; a second is generous. */
+	/* Bounded, so a missing vblank cannot hang the boot. */
 	deadline = now_ms() + 1000u;
 	while (!done) {
 		int64_t left = (int64_t)(deadline - now_ms());
@@ -644,10 +595,8 @@ static int page_flip(struct display *disp, uint32_t fb_id)
 }
 
 /*
- * Put @fb_id up with a full modeset, then flip to it once more.  The flip is
- * a no-op on screen; it makes sure the plane really carries our buffer even
- * where a driver treats the first commit specially, as the boot logo
- * hand-over does.
+ * The extra flip makes sure the plane carries our buffer, also where the
+ * driver treats the first commit specially (the boot logo hand-over).
  */
 static int first_frame(struct display *disp, uint32_t fb_id)
 {
@@ -661,11 +610,7 @@ static int first_frame(struct display *disp, uint32_t fb_id)
 	return page_flip(disp, fb_id);
 }
 
-/*
- * Wait until the CRTC scans out something other than @fb_id - the compositor
- * has committed - or @max_ms passes (0: no limit), or a signal asks to stop.
- * The CRTC can be queried without being DRM master.
- */
+/* Polls the CRTC, which works without DRM master. max_ms 0: no limit. */
 static void hold_until_replaced(struct display *disp, uint32_t fb_id,
 				unsigned int max_ms)
 {
@@ -687,10 +632,6 @@ static void hold_until_replaced(struct display *disp, uint32_t fb_id,
 		sleep_until(now_ms() + HOLD_POLL_MS);
 	}
 }
-
-/* -------------------------------------------------------------------------
- * main
- * ------------------------------------------------------------------------- */
 
 static void usage(FILE *fp)
 {
@@ -817,7 +758,7 @@ int main(int argc, char **argv)
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
 
-	/* The first image is loaded before the mode is picked: it sets the size. */
+	/* Loaded first, because its size selects the mode. */
 	if (load_bmp(argv[optind], &img)) {
 		notify_ready();
 		return 1;
@@ -832,11 +773,8 @@ int main(int argc, char **argv)
 	}
 
 	/*
-	 * Ask for modes with their picture aspect ratio.  Without this the
-	 * kernel strips the aspect ratio from the modes it reports and takes
-	 * the mode handed back as having none - which a driver that pins its
-	 * connector to one CEA mode, as the boot logo layer does, may reject
-	 * as a different mode.  Harmless everywhere else.
+	 * Without this the kernel strips the aspect ratio from the modes. Some
+	 * drivers compare it and reject the mode handed back.
 	 */
 	if (drmSetClientCap(disp.fd, DRM_CLIENT_CAP_ASPECT_RATIO, 1))
 		logmsg("DRM_CLIENT_CAP_ASPECT_RATIO not supported, continuing");
@@ -853,11 +791,11 @@ int main(int argc, char **argv)
 			goto out;
 
 	for (i = 0; i < nimages && !stop; i++) {
-		/* Always draw into the buffer that is not on screen. */
+		/* Draw off screen, so the visible image never tears. */
 		struct buffer *buf = &disp.buf[back];
 
 		if (i > 0 && load_bmp(argv[optind + i], &img)) {
-			/* Skip it; the previous image stays up for its slot too. */
+			/* The previous image stays up for this slot too. */
 			continue;
 		}
 
@@ -869,7 +807,7 @@ int main(int argc, char **argv)
 				goto out;
 			start = now_ms();
 		} else {
-			/* Flip on a fixed schedule, so loading time does not add up. */
+			/* Fixed schedule, so loading time does not add up. */
 			sleep_until(start + (uint64_t)i * opt.interval_ms);
 			if (stop)
 				break;
@@ -879,12 +817,7 @@ int main(int argc, char **argv)
 		back ^= 1;
 	}
 
-	/*
-	 * The last image is up (it was drawn into the buffer before the final
-	 * toggle).  Let go of DRM master so the compositor can take it, report
-	 * readiness so systemd starts the compositor, and keep the image on
-	 * screen until it is replaced.
-	 */
+	/* Drop master first, so the compositor started by READY=1 can take it. */
 	if (!stop) {
 		if (drmDropMaster(disp.fd))
 			logmsg("drmDropMaster: %s", strerror(errno));
@@ -896,11 +829,7 @@ int main(int argc, char **argv)
 out:
 	notify_ready();
 	free_image(&img);
-	/*
-	 * Closing the device releases the buffers.  Once the compositor has
-	 * committed, our framebuffer is no longer on any plane and this does
-	 * not touch the display.
-	 */
+	/* Safe once the compositor has committed: our framebuffer is off screen. */
 	for (i = 0; i < 2; i++)
 		if (disp.buf[i].map)
 			munmap(disp.buf[i].map, disp.buf[i].size);

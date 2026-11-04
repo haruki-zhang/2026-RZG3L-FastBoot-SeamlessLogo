@@ -1,27 +1,21 @@
 # SPDX-License-Identifier: MIT
 #
-# Still image for the RZ/G3L seamless still logo.
-#
-# The U-Boot display driver runs before the main loop and does
+# U-Boot loads the logo with
 #
 #   ext4load mmc 0:2 0x48000000 boot/boot_img_720p.bin.gz
 #   unzip    0x48000000 0x58000000
 #
-# so the images must sit in /boot on the rootfs partition under exactly these
-# names. Partition 1 of the BSP layout is vfat and ext4load cannot read it;
-# partition 2 is also where the BSP environment keeps Image and the device
-# tree, so U-Boot only ever mounts one filesystem.
+# so the file names and /boot on partition 2 are fixed. Partition 1 is vfat,
+# which ext4load cannot read.
 #
-# Payload format: raw ARGB8888 frame buffer, gzip compressed.
-#   boot_img_720p.bin.gz    1280x720x4  = 3686400 bytes uncompressed
-#   boot_img_1080p.bin.gz   1920x1080x4 = 8294400 bytes uncompressed
+# Each file is a raw ARGB8888 frame buffer, gzip compressed:
+#   boot_img_720p.bin.gz    1280x720x4  = 3686400 bytes
+#   boot_img_1080p.bin.gz   1920x1080x4 = 8294400 bytes
 #
-# The uncompressed size must match, byte for byte, the resolution selected by
-# DISPLAY_MODE in drivers/video/rzg2l/rzg2l_video.c - the driver gunzips
-# straight into the reserved frame buffer and never checks the geometry.
+# The size must match DISPLAY_MODE in drivers/video/rzg2l/rzg2l_video.c.
+# U-Boot unpacks straight into the frame buffer and does not check it.
 #
-# To ship your own artwork, bbappend this recipe from your own layer with
-# FILESEXTRAPATHS:prepend and drop in files of the same names.
+# For your own logo, replace the files from a bbappend (FILESEXTRAPATHS).
 
 SUMMARY = "U-Boot still logo images for the RZ/G3L seamless still logo"
 DESCRIPTION = "Installs the gzip-compressed raw frame buffer images that the \
@@ -31,8 +25,7 @@ HOMEPAGE = "https://github.com/renesas-rz"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-# unpack=0 matters: the fetcher would gunzip a .gz in SRC_URI during do_unpack,
-# and U-Boot wants the compressed file - it runs "unzip" on it itself.
+# unpack=0: U-Boot needs the compressed file. do_unpack would gunzip it.
 SRC_URI = " \
 	file://boot_img_720p.bin.gz;unpack=0 \
 	file://boot_img_1080p.bin.gz;unpack=0 \
@@ -40,12 +33,11 @@ SRC_URI = " \
 
 S = "${WORKDIR}"
 
-# Nothing to build, and no toolchain needed to install two blobs.
 INHIBIT_DEFAULT_DEPS = "1"
 do_configure[noexec] = "1"
 do_compile[noexec] = "1"
 
-# The artwork is tied to this machine's display configuration, not just to its
+# The logo depends on the display of this machine, not only on the
 # architecture.
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
@@ -59,8 +51,7 @@ do_install() {
 
 FILES:${PN} = "${RZG3L_STILL_LOGO_DIR}"
 
-# Read straight off the block device by U-Boot, so there is nothing to strip,
-# debug-split or check for dependencies.
+# Not ELF: nothing to strip, split or check for libraries.
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INHIBIT_SYSROOT_STRIP = "1"

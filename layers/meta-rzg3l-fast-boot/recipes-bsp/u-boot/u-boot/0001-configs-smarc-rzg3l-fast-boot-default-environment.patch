@@ -2,45 +2,9 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Zixuan Zhang <zixuan.zhang.uj@renesas.com>
 Subject: [PATCH] configs: smarc-rzg3l: fast-boot default environment
 
-Bake the fast-boot U-Boot environment into the built-in defaults so the
-board does not need a manual setenv/saveenv session after flashing.
-
-Two changes, both inside the non-distro-boot branch of the header, which is
-the branch smarc-rzg3l_defconfig selects (CONFIG_RZG3L_DISTRO_BOOT is not set
-there):
-
-1. bootcmd loses the leading "env default -a".
-
-   The stock value is "env default -a;run bootcmd_check;run bootimage".
-   That reset runs on every boot and reverts the whole environment to the
-   built-in defaults, so any saved fast-boot tuning is thrown away one
-   command before it would have been used. It also makes the environment
-   effectively read-only, which is not what a product wants.
-
-   This one is not specific to a boot device: bootcmd_check picks the loader,
-   so both the eMMC and the SD path stop being reset.
-
-2. prodemmcbootargs loses "earlycon" and gains "quiet
-   systemd.show_status=false".
-
-   earlycon replays the kernel ring buffer synchronously over the
-   115200-baud UART, and every subsequent printk is emitted at the same
-   speed. quiet raises the console loglevel so only warnings and above
-   reach the UART, and systemd.show_status=false stops systemd printing a
-   status line per unit. The records are still in the kernel log and the
-   journal; only the serial output is suppressed.
-
-   Re-add earlycon when debugging an early kernel failure - it is the only
-   way to see output from before the real console is registered.
-
-prodsdbootargs is deliberately left at the BSP default, earlycon and all. The
-eMMC path is the product boot; the SD path is the development boot loop, where
-a verbose console is what you want. So an SD boot of the same image keeps the
-stock kernel command line and stays chatty, while the eMMC boot is quiet.
-
-bootdelay is not touched here. It comes from CONFIG_BOOTDELAY through
-env_default.h, so it is set to 0 in fastboot.cfg instead, and it applies to
-both boot devices.
+Drop "env default -a" from bootcmd, so saved settings survive a boot.
+Make the eMMC kernel command line quiet: every printk on the 115200-baud
+UART costs boot time. SD boot keeps the verbose console for development.
 
 Upstream-Status: Inappropriate [configuration]
 ---
@@ -48,7 +12,7 @@ Upstream-Status: Inappropriate [configuration]
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/include/configs/smarc-rzg3l.h b/include/configs/smarc-rzg3l.h
-index 96384fd..0b1c2fe 100644
+index 96384fdf0a..0b1c2feb72 100644
 --- a/include/configs/smarc-rzg3l.h
 +++ b/include/configs/smarc-rzg3l.h
 @@ -123,13 +123,13 @@
@@ -67,6 +31,3 @@ index 96384fd..0b1c2fe 100644
  #endif
  
  /* For board */
--- 
-2.34.1
-

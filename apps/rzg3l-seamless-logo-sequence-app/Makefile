@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: MIT
 #
-# Build with the BSP's SDK:
-#
-#   $ source /opt/rz-vlp/<version>/environment-setup-cortexa55-poky-linux
-#   $ make
-#
-# The SDK environment provides CC (with --sysroot), CFLAGS, LDFLAGS and a
-# pkg-config that looks inside the SDK sysroot. CFLAGS and LDFLAGS are appended
-# to, not replaced, so the SDK's flags survive.
+# Build in the BSP SDK environment. CFLAGS and LDFLAGS are appended to, so the
+# SDK's flags (sysroot, architecture) are kept.
 
 BIN ?= logo_sample_app
 PKG_CONFIG ?= pkg-config
