@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * Animation-only CM33 firmware. With meta-rzg3l-lp-display-demo, fla_anim.c is
+ * Animation-only CM33 firmware. With meta-rzg3l-lp-display, fla_anim.c is
  * linked into lpdemo-cm33-fw instead.
  *
  * SysTick only wakes the core. Time is taken from the system counter, so it

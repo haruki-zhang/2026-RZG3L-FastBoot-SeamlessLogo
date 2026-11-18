@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Subset of lpdemo-cm33-fw/src/cm33.h (meta-rzg3l-lp-display-demo). */
+/* Subset of lpdemo-cm33-fw/src/cm33.h (meta-rzg3l-lp-display). */
 #ifndef CM33_H
 #define CM33_H
 

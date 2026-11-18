@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Layer1 frame switching during the boot. Linked into fla-cm33-fw or into
- * lpdemo-cm33-fw (meta-rzg3l-lp-display-demo).
+ * lpdemo-cm33-fw (meta-rzg3l-lp-display).
  *
  * A non-blocking state machine driven by the caller's tick, so the CM33 can do
  * other work at the same time.

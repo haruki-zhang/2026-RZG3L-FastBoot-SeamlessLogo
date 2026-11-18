@@ -2,7 +2,7 @@ SUMMARY = "RZ/G3L CM33 fast logo animation - animation-only CM33 firmware (BL22)
 DESCRIPTION = "Bare-metal Cortex-M33 firmware loaded and started by BL2 \
 (meta-rz-multi-os RZ_CM33_FIRMWARE_LOAD) that switches the Layer1 (RPF1) frames of the \
 boot logo. Used when the project has no other CM33 firmware: with \
-meta-rzg3l-lp-display-demo the animation is linked into lpdemo-cm33-fw instead \
+meta-rzg3l-lp-display the animation is linked into lpdemo-cm33-fw instead \
 (RZG3L_CM33_FW)."
 LICENSE = "BSD-3-Clause"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/BSD-3-Clause;md5=550794465ba0ec5312d6919e203a55f9"

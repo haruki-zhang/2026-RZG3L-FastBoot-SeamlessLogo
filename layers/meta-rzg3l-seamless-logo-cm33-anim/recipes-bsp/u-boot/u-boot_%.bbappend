@@ -3,7 +3,7 @@
 # from the same interface definition.
 #
 # ":append" is applied after the still logo layer's "+=", so 0001 applies on
-# top of its patches. meta-rzg3l-lp-display-demo also patches this driver, but
+# top of its patches. meta-rzg3l-lp-display also patches this driver, but
 # other lines, so that order does not matter.
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:${FLA_FW_FILESDIR}:"
 
