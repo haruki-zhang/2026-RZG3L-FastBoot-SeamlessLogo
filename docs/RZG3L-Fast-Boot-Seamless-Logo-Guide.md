@@ -3,8 +3,8 @@
 ## 1. Overview
 
 This package provides three boot-experience solutions for the **RZ/G3L SMARC
-Evaluation Board Kit**, based on the RZ/G3L BSP v1.0.0. Each solution is a set
-of Yocto layers added to the standard BSP build.
+Evaluation Board Kit**, based on Renesas RZ Linux BSP Plus for RZ/G3L. Each
+solution is a set of Yocto layers added to the standard BSP build.
 
 ### Objective
 
@@ -36,9 +36,10 @@ Weston appears about 22 s after power-on. The solutions provide:
 In all solutions, U-Boot starts the HDMI output shortly after power-on. The
 kernel takes over the running display instead of resetting it.
 
-> **Notice:** This guide assumes the standard BSP build environment of
-> `r01us0858ej0100-rzg3l(Linux Start-up_Guide_RZG3L)_rc1.pdf` (the "Start-up
-> Guide"). It describes only the additional steps.
+> **Notice:** This guide assumes the build environment of Renesas RZ Linux
+> BSP Plus ("BSP Plus"), `https://renesas-rz.github.io/rz_linux_bsp_plus/`,
+> RZ/G Series. It describes only the additional steps. References such as
+> "BSP Plus Getting Started, Step 4" point to the RZ/G3L tab of that page.
 
 ---
 
@@ -50,28 +51,26 @@ kernel takes over the running display instead of resetting it.
 |---|---|
 | **Board** | RZ/G3L SMARC Evaluation Board Kit (`smarc-rzg3l`) |
 | **Display** | HDMI monitor with 1920x1080@60 (and 1280x720@60 for Solutions 1 and 3) |
-| **Power, serial console, microSD card** | Start-up Guide, 4.1 |
+| **Power, serial console, microSD card** | BSP Plus Getting Started, Step 2 |
 | **Host Machine** | Linux PC (Ubuntu 22.04) |
 
 ### Software Environment
 
 | **Software** | **Version / Description** |
 |---|---|
-| **RZ/G3L BSP** | v1.0.0 (Yocto scarthgap, U-Boot 2024.07, Linux 6.12.46-cip8) |
-| **Graphics package** | `meta-rz-features/meta-rz-graphics` (required for `core-image-weston`) |
-| **Multi-OS package** | `meta-rz-features/meta-rz-multi-os` v4.2.0 for RZ/G3L (Solution 3 only) |
-| **Reference Guide** | `r01us0858ej0100-rzg3l(Linux Start-up_Guide_RZG3L)_rc1.pdf` |
+| **Linux BSP** | Renesas RZ Linux BSP Plus for RZ/G3L |
+| **Graphics package** | `meta-rz-features/meta-rz-graphics` (BSP Plus How To Build, Step 1) |
+| **Multi-OS package** | `meta-rz-multi-os` (BSP Plus How To Build, Step 3). Solution 3 only |
 | **Target Machine** | `smarc-rzg3l` |
 | **Image** | `core-image-weston` |
 
 ### Common Preparation
 
-1. Prepare the BSP build environment: Start-up Guide 2.2, steps (1) to (5),
-   with the Graphics package.
+1. Prepare the BSP build environment for RZ/G3L (`BOARD=smarc-rzg3l`), with
+   the Graphics package: BSP Plus How To Build, Step 1, and Step 2 items 1
+   to 7.
 2. Copy the layers of the selected solution into the top directory of the
    workspace.
-
-Solution 3 also needs the Multi-OS package (5.2, Step 1).
 
 ---
 
@@ -91,8 +90,6 @@ Solution 3 also needs the Multi-OS package (5.2, Step 1).
   - **U-Boot**: a display driver starts the HDMI output and shows the logo
     (1280x720).
   - **Kernel**: the display drivers take over the running display.
-
-The two layers can also be used separately.
 
 ### 3.2 Implementation Steps
 
@@ -122,21 +119,19 @@ DISTRO = "rz-vlp-fast"
 MACHINE=smarc-rzg3l bitbake core-image-weston
 ```
 
-The output is in `build/tmp/deploy/images/smarc-rzg3l/`.
-
 #### Step 4. Write the Board for eMMC Boot
 
 The logo is loaded from eMMC partition 2, so the image must be on eMMC. It is
 written with `bmaptool` from a "writer" Linux on a microSD card, booted in
 QSPI boot mode.
 
-1. **Build the writer image.** Use a standard BSP build in a separate build
-   directory:
+1. **Build the writer image.** Use a standard BSP build (BSP Plus How To
+   Build, Step 2 items 6 to 9) in a separate build directory:
 
    ```sh
    # pwd should be the top directory of the workspace
 
-   TEMPLATECONF=$PWD/meta-renesas/meta-rz-distro/conf/templates/vlp-v5-conf/ \
+   TEMPLATECONF=$PWD/meta-renesas/meta-rz-distro/conf/templates/bsp-plus-conf/ \
        source poky/oe-init-build-env build-writer
    bitbake-layers add-layer ../meta-rz-features/meta-rz-graphics
    ```
@@ -152,8 +147,9 @@ QSPI boot mode.
    ```
 
 2. **Prepare the writer.** Write the writer WIC image to a microSD card
-   (Start-up Guide 3). Write its `bl2_bp_spi-smarc-rzg3l.srec` and
-   `fip-smarc-rzg3l.srec` to QSPI (Start-up Guide 4.3–4.5).
+   (BSP Plus Getting Started, Step 4). Write its
+   `bl2_bp_spi-smarc-rzg3l.srec` and `fip-smarc-rzg3l.srec` to QSPI (BSP
+   Plus Getting Started, Step 5).
 
 3. **Copy the Solution 1 image to the writer microSD card:**
 
@@ -167,32 +163,34 @@ QSPI boot mode.
    sudo umount /mnt
    ```
 
-4. **Write the Solution 1 bootloader to eMMC** (Start-up Guide 4.3 and
-   8.2.1), with these files of the Solution 1 build:
+4. **Write the Solution 1 bootloader to eMMC** (BSP Plus Appendix, How to
+   boot from eMMC: Writing Bootloader for eMMC Boot), with these files of
+   the Solution 1 build:
 
    ```text
    Flash_Writer_SCIF_RZG3L_SMARC_LPDDR4.mot
-   bl2_bp_mmc-smarc-rzg3l.srec      (bl2_bp_emmc-smarc-rzg3l.srec in the Start-up Guide)
+   bl2_bp_mmc-smarc-rzg3l.srec
    fip-smarc-rzg3l.srec
    ```
 
 5. **Write the Solution 1 image to eMMC.** Insert the microSD card into the
-   carrier board slot. Boot in QSPI boot mode (Start-up Guide 4.5 and 5.1),
-   log in as `root` and run:
+   carrier board slot. Boot in QSPI boot mode (BSP Plus Getting Started,
+   Step 6), log in as `root` and run:
 
    ```sh
    bmaptool copy /root/core-image-weston-smarc-rzg3l.rootfs.wic.gz /dev/mmcblk0
    ```
 
-   > **Note:** Keep the "SYS" DIP switch set to eMMC (Start-up Guide 4.1.3).
+   > **Note:** Keep the "SYS" DIP switch set to eMMC (BSP Plus Getting
+   > Started, Step 6).
 
-6. **Boot from eMMC.** Set eMMC boot mode (Start-up Guide 8.2.3, Table 15)
-   and remove the microSD card. U-Boot boots from the microSD card whenever
-   one is inserted.
+6. **Boot from eMMC.** Set eMMC boot mode (`SW_MODE` 1 to 4: ON, OFF, OFF,
+   ON; BSP Plus Appendix, How to boot from eMMC) and remove the microSD
+   card: U-Boot boots from the microSD card whenever one is inserted.
 
-7. **Reset the U-Boot environment** (Start-up Guide 8.2.4). The boot delay is
-   0, so keep pressing a key on the serial console while pressing RESET. Then
-   run:
+7. **Reset the U-Boot environment** (BSP Plus Appendix, How to boot from
+   eMMC: Setting U-boot for eMMC boot). The boot delay is 0: keep pressing a
+   key on the serial console while pressing RESET. Then run:
 
    ```sh
    => env default -a
@@ -200,16 +198,11 @@ QSPI boot mode.
    => reset
    ```
 
-> **Note:** U-Boot is in `bl2`/`fip`, not in the WIC image. After a change to
-> U-Boot, repeat item 4.
-
 ### 3.3 Notes
 
 - **Disabled peripherals:** Ethernet, USB, PCIe, CAN, camera, audio,
   i2c0/i2c1/i2c3, extra UARTs and RTC. To use one, re-enable its device tree
   node and the matching kernel and userspace features.
-- **Kernel messages:** not shown on the serial console for eMMC boot
-  (`quiet`). Use `dmesg` or `journalctl`.
 - **Changing the logo or the resolution:** see
   `meta-rzg3l-seamless-logo-still/README`, section III. For easy
   customization, use Solution 2.
@@ -230,9 +223,6 @@ QSPI boot mode.
   - Starts early in the Linux boot and shows a second image sequence (default
     `w1.bmp`–`w7.bmp`, 1 s each).
   - Holds the last image until Weston replaces it.
-  - Installed manually.
-
-The layer and the application do not depend on each other.
 
 Default sequence:
 
@@ -251,8 +241,7 @@ reset → l1 → l2 → l3 → l4 (held during kernel boot) → w1 → … → w
 bitbake-layers add-layer ../meta-rzg3l-seamless-logo-sequence
 ```
 
-> **Note:** Cannot be combined with `meta-rzg3l-seamless-logo-still`. The
-> build stops with an error.
+> **Note:** Cannot be combined with `meta-rzg3l-seamless-logo-still`.
 
 #### Step 2. Build the Image
 
@@ -266,13 +255,11 @@ To customize the sequence, set the variables of 4.3 in `local.conf` first.
 
 The frames are loaded from partition 2 of the boot medium.
 
-| Boot mode | Procedure (Start-up Guide) | Note |
+| Boot mode | Procedure (BSP Plus) | Note |
 |---|---|---|
-| **QSPI boot** (default) | 3 (microSD card), 4.3–4.5 (bootloader), 5 (boot) | The WIC image does not contain U-Boot. Write `bl2_bp_spi-smarc-rzg3l.srec` and `fip-smarc-rzg3l.srec` with Flash Writer. |
-| **eSD boot** | 8.3 | The WIC image contains `bl2` and `fip`. |
-| **eMMC boot** | 8.2 | As Solution 1, Step 4, with the Solution 2 image. |
-
-Without the sample application, `l4` stays on screen until Weston.
+| **QSPI boot** (default) | Getting Started, Step 4 (microSD card), Step 5 (bootloader), Step 6 (boot) | The WIC image does not contain U-Boot. Write `bl2_bp_spi-smarc-rzg3l.srec` and `fip-smarc-rzg3l.srec` with Flash Writer. |
+| **eSD boot** | Appendix, How to boot from eSD | The WIC image contains `bl2` and `fip`. |
+| **eMMC boot** | Appendix, How to boot from eMMC | As Solution 1, Step 4, with the Solution 2 image. |
 
 #### Step 4. Install the Sample Application
 
@@ -299,10 +286,6 @@ systemctl enable sample-app.service
 reboot
 ```
 
-To stop using it: `systemctl disable sample-app.service`.
-
-> **Note:** The files can also be copied with `scp`. `root` has no password.
-
 ### 4.3 Customization
 
 | What to change | Where | Write to the board |
@@ -313,8 +296,7 @@ To stop using it: `systemctl disable sample-app.service`.
 | Resolution | `RZG3L_LOGO_SEQUENCE_RESOLUTION` in `local.conf`, plus new frames | `bl2`/`fip` and WIC |
 | Linux images and interval | `run-app.sh` on the board | None |
 
-Changes in `local.conf` need a rebuild. With eSD boot, the WIC image also
-contains `bl2`/`fip`.
+With eSD boot, the WIC image also contains `bl2`/`fip`.
 
 #### U-Boot Frames
 
@@ -350,8 +332,6 @@ For trials without a rebuild:
 => reset
 ```
 
-To return to the built-in values, delete the variables and run `saveenv`.
-
 > **Note:** The sequence plays in parallel with the boot. If it is longer than
 > the boot, Linux takes over before the last frame.
 
@@ -369,9 +349,8 @@ RZG3L_LOGO_SEQUENCE_FRAMES = "frame1_720p.bmp frame2_720p.bmp"
 - The kernel needs no change. The HDMI output then offers only this mode, so
   use the same size for the sample application images.
 
-Other resolutions need a new timing table in U-Boot. See
-`meta-rzg3l-seamless-logo-sequence/README`, section III. The maximum is
-1920x1080@60.
+Other resolutions (up to 1920x1080@60) need a new timing table in U-Boot:
+see `meta-rzg3l-seamless-logo-sequence/README`, section III.
 
 #### Linux Images and Interval
 
@@ -390,9 +369,6 @@ INTERVAL_MS=1000
 - Any number of images, shown in this order.
 - Uncompressed BMP, 24 or 32 bpp, at the U-Boot resolution. Other sizes are
   centred, or scaled with `--fit=scale`.
-- Takes effect at the next boot.
-
-For other options, run `logo_sample_app --help`.
 
 > **Important:** Weston starts after the last image. With N images and an
 > interval of T ms, Weston starts about N × T ms later (7 s by default).
@@ -412,16 +388,12 @@ For other options, run `logo_sample_app --help`.
   - **CM33 firmware**: started by BL2. It switches the frames until the first
     Weston frame.
   - **Frames**: made at build time. Default: a 12-dot spinner, 192x192, below
-    the wordmark, with a percentage inside. The bright dot steps clockwise,
-    one dot per 125 ms (one turn in 1.5 s). The percentage is simulated: it
-    counts from 1 % to 99 % in 20 s, fast first, then slower. It then stays
-    at 99 % and the spinner keeps turning until the first Weston frame.
+    the wordmark, with a simulated percentage inside: 1 % to 99 % in 20 s,
+    then 99 % while the spinner keeps turning.
 - **RZ/G3L Multi-OS package**: its BL2 loads and starts the CM33 firmware.
 
-The CM33 only changes two values in a display list in SRAM. The display reads
-the list at every frame start, so a switch never tears. The Cortex-A55 is not
-involved after U-Boot. U-Boot loads the frames after the logo is on screen:
-about 0.27 s with the default animation, before the kernel starts (5.3).
+The CM33 switches the frames in a display list in SRAM, read at every frame
+start, so a switch never tears. The Cortex-A55 is not involved after U-Boot.
 
 Default sequence:
 
@@ -434,13 +406,13 @@ reset → still logo + spinner 1 % … 99 % (then 99 %, looped) ────→ 
 
 #### Step 1. Add the Layers
 
-Download the RZ/G3L Multi-OS package v4.2.0 and extract it in the top
-directory of the workspace. Then add the layers:
+Get the Multi-OS package and place it in the workspace: BSP Plus How To
+Build, Step 3, and the README of the package. Then add the layers:
 
 ```sh
 # pwd should be the build directory of the workspace
 
-bitbake-layers add-layer ../meta-rz-features/meta-rz-multi-os/meta-rzg/meta-rzg3l
+bitbake-layers add-layer ../meta-rz-features/meta-rz-multi-os/meta-rzg3l
 bitbake-layers add-layer ../meta-rzg3l-seamless-logo-still
 bitbake-layers add-layer ../meta-rzg3l-seamless-logo-cm33-anim
 ```
@@ -471,7 +443,8 @@ The WIC image in `build/tmp/deploy/images/smarc-rzg3l/` contains `bl2`,
 
 #### Step 4. Write the Board for eSD Boot
 
-1. **Write the WIC image to a microSD card** (Start-up Guide 3):
+1. **Write the WIC image to a microSD card** (BSP Plus Getting Started,
+   Step 4):
 
    ```sh
    # pwd should be the build directory of the workspace
@@ -480,12 +453,15 @@ The WIC image in `build/tmp/deploy/images/smarc-rzg3l/` contains `bl2`,
    sudo bmaptool copy tmp/deploy/images/smarc-rzg3l/core-image-weston-smarc-rzg3l.rootfs.wic.gz /dev/sdX
    ```
 
-2. **Set eSD boot mode** (Start-up Guide 8.3.2, Table 17). Set the "SYS" DIP
-   switch to the SMARC module microSD slot (`SW_SD0_DEV_SEL`, Start-up Guide
-   4.1.3).
+2. **Set eSD boot mode** (BSP Plus Appendix, How to boot from eSD):
 
-3. **Insert the card into the SMARC module slot** and power on (Start-up
-   Guide 8.3.3).
+   | DIP switch | 1 | 2 | 3 | 4 | 5 | 6 |
+   |---|---|---|---|---|---|---|
+   | `SW_MODE` (carrier board) | ON | ON | OFF | ON | | |
+   | `SYS` (`SW_CONFIG`, module) | ON | OFF | ON | OFF | OFF | OFF |
+
+3. **Insert the card into the microSD slot of the SMARC module** and power
+   on: press and hold POWER for 1 second.
 
 > **Note:** Always use `bl2`, `fip` and the CM33 firmware of the same build.
 > The WIC image keeps them together.
@@ -528,9 +504,6 @@ little shorter than the time to the Weston desktop of your image, for example:
 FLA_ANIM_PROGRESS_S = "12"      # 99 % after 12 s, e.g. with meta-rzg3l-fast-boot
 ```
 
-Whole or decimal seconds (`"12.5"`) are accepted. Rebuild the image and
-write the WIC image (5.2, Step 4).
-
 Every frame is stored, so the time sets the number of frames and the time
 U-Boot needs to load them:
 
@@ -540,25 +513,11 @@ U-Boot needs to load them:
 | `20` (default) | 172 | 25 MB | 0.265 s (measured) |
 | `30` | 252 | 37 MB | about 0.39 s (estimated) |
 
-- Frames = `FLA_ANIM_PROGRESS_S` × 1000 / `FLA_ANIM_PERIOD_MS`, plus 12 for
-  the spinner turn at 99 %. A frame is 192 × 192 × 4 bytes.
-- U-Boot loads them after the logo is on screen, so the logo is not delayed,
-  but the kernel starts later by that time.
-- The frames must fit in 80 MiB: with the default size and frame time, up to
-  about 69 s. The build stops with an error above that.
-- `FLA_ANIM_PERIOD_MS` also sets the spinner speed (one dot per frame), and
-  `FLA_ANIM_SIZE` the size of the spinner and of the digits. The frame must be
-  square.
-
-Check on the serial console (one line):
-
-```text
-fla: anim: Layer1 192x192 at (544,480), 172 frame(s) every 125 ms loop from 160,
-           timeout 60000 ms, ready in 265 ms: CM33 state 1
-```
-
-`loop from 160`: frames 0 to 159 show 1 % to 98 %, then frames 160 to 171
-(one spinner turn at 99 %) loop.
+- U-Boot loads the frames after the logo is on screen, so the logo is not
+  delayed, but the kernel starts later by that time.
+- The frames must fit in 80 MiB: up to about 69 s with the default size and
+  frame time.
+- For the spinner, `FLA_ANIM_SIZE` must be square.
 
 #### Own Frames
 
@@ -568,10 +527,7 @@ fla: anim: Layer1 192x192 at (544,480), 172 frame(s) every 125 ms loop from 160,
 - At most 80 MiB in total (width × height × 4 bytes per frame).
 - With `FLA_ANIM_LOOP = "1"`, the frames before `FLA_ANIM_LOOP_FROM` are
   played once, the rest loops.
-- `FLA_ANIM_PROGRESS_S` is not used. Set `FLA_ANIM_PERIOD_MS` for your frames
-  (default 125).
-
-The build checks these limits.
+- `FLA_ANIM_PROGRESS_S` is not used. Set `FLA_ANIM_PERIOD_MS` for your frames.
 
 ```sh
 # build/conf/local.conf
@@ -596,26 +552,9 @@ FLA_ANIM_Y = "500"              # centre of the screen
 ```
 
 - The spinner steps one dot per frame: `FLA_ANIM_PERIOD_MS` sets its speed.
-  The percentage still reaches 99 % after `FLA_ANIM_PROGRESS_S`.
-- `FLA_ANIM_LOOP = "0"`: the animation stops on its last frame (99 %, the
-  spinner stands still).
-- A frame switch is shown at the next display frame (16.7 ms at 60 Hz). Use
-  17 ms or more.
-- Layer1 is centred horizontally. `FLA_ANIM_Y` works for 1280x720 and
-  1920x1080.
-
-#### U-Boot Environment
-
-For trials, saved with `saveenv`:
-
-| Variable | Effect |
-|---|---|
-| `fla_off=1` | No animation |
-| `fla_period_ms` | Time per frame in ms |
-| `fla_timeout_ms` | Time limit in ms |
-
-> **Note:** With eSD boot, U-Boot uses its default environment at every boot
-> (Start-up Guide 8.3.3). Use the `local.conf` variables instead.
+- `FLA_ANIM_LOOP = "0"`: the animation stops on its last frame.
+- Use 17 ms or more: a frame switch is shown at the next display frame.
+- Layer1 is centred horizontally.
 
 ---
 
@@ -625,11 +564,10 @@ For trials, saved with `saveenv`:
 
 - The HDMI output is fixed to the U-Boot mode. EDID and hot-plug are not
   used. A monitor without that mode shows no picture.
-- No `/dev/fb0` and no kernel console on HDMI. The serial console works.
+- No `/dev/fb0` and no kernel console on HDMI.
 - `0x58000000`–`0x5fffffff` (128 MiB) stays reserved.
 - The BSP U-Boot environment has `loadaddr=0x58000000`, the logo frame
   buffer. Give an explicit address to manual `ext4load` or `tftp` commands.
-- Some monitors lock onto the HDMI signal late and miss the first frame.
 
 **Solution 1**
 
@@ -640,7 +578,6 @@ For trials, saved with `saveenv`:
 
 - The frames are loaded from partition 2 of the boot MMC device. Other boot
   media show a black frame.
-- With the sample application, Weston starts after the image sequence.
 - Not tested together with `meta-rzg3l-fast-boot`.
 
 **Solution 3**
@@ -650,9 +587,6 @@ For trials, saved with `saveenv`:
 - OpenAMP / RPMsg cannot be used on the CM33 at the same time.
 - BL2 loads the CM33 firmware first, so the logo appears about 0.2 s later
   than without the Multi-OS package (estimated).
-- Loading the frames delays the kernel start: about 0.27 s with the default
-  animation (5.3, Time from 1 % to 99 %).
-- The percentage is simulated. It does not follow the boot progress.
 - The animation ends at the first Weston frame. A Linux application cannot
   continue it.
 
@@ -675,15 +609,10 @@ rzg3l-fast-boot-seamless-logo/
 │
 ├── apps/
 │   └── rzg3l-seamless-logo-sequence-app/          # sample application (Solution 2)
-│       ├── README.md
-│       ├── main.c  Makefile  run-app.sh  sample-app.service
-│       ├── prebuilt/logo_sample_app
-│       └── images/w1.bmp … w7.bmp
 │
-├── image/                                         # prebuilt WIC images
-│   ├── README.md
-│   ├── fast-boot-seamless-logo-still/             # Solution 1
-│   ├── seamless-logo-sequence/                    # Solution 2
-│   └── seamless-logo-cm33-anim/                   # Solution 3
-└── reference/                                     # RZ/G3L Linux Start-up Guide
+└── image/                                         # prebuilt WIC images
+    ├── README.md
+    ├── fast-boot-seamless-logo-still/             # Solution 1
+    ├── seamless-logo-sequence/                    # Solution 2
+    └── seamless-logo-cm33-anim/                   # Solution 3
 ```
